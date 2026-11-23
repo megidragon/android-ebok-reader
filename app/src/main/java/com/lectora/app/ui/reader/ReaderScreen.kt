@@ -79,6 +79,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FilterAlt
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Tune
 import com.lectora.app.data.ReaderTheme
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.lazy.LazyListState
@@ -128,6 +129,7 @@ fun ReaderScreen(
     var showOriginalPdf by rememberSaveable { mutableStateOf(false) }
     var showFilter by remember { mutableStateOf(false) }
     var showPrerender by remember { mutableStateOf(false) }
+    var showOptions by remember { mutableStateOf(false) }
     val mode = narrationSettings.translationMode
     val translating = narrationSettings.translates(vm.sourceLanguage)
     val effectiveMode = if (translating) mode else TranslationMode.ORIGINAL
@@ -217,11 +219,16 @@ fun ReaderScreen(
                 actions = {
                     TranslationMenu(mode, onSelect = vm::setTranslationMode)
                     IconButton(onClick = { showToc = true }) { Icon(Icons.AutoMirrored.Filled.List, "Índice") }
-                    AppearanceMenu(readerSettings.fontScale, readerSettings.theme, readerSettings.pageMode, vm)
+                    IconButton(onClick = { showOptions = true }) { Icon(Icons.Default.Tune, "Opciones de lectura") }
                     var overflow by remember { mutableStateOf(false) }
                     Box {
                         IconButton(onClick = { overflow = true }) { Icon(Icons.Default.MoreVert, "Más opciones") }
                         DropdownMenu(expanded = overflow, onDismissRequest = { overflow = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Opciones de lectura…") },
+                                leadingIcon = { Icon(Icons.Default.Tune, null) },
+                                onClick = { overflow = false; showOptions = true },
+                            )
                             DropdownMenuItem(
                                 text = { Text("Filtro de texto…") },
                                 leadingIcon = { Icon(Icons.Default.FilterAlt, null) },
@@ -370,6 +377,17 @@ fun ReaderScreen(
         }
     }
 
+    if (showOptions) {
+        ReaderOptionsSheet(
+            vm = vm,
+            isPdf = ui.isPdf,
+            showingOriginalPdf = showOriginalPdf,
+            onToggleOriginalPdf = { showOriginalPdf = !showOriginalPdf },
+            onOpenFilter = { showFilter = true },
+            onOpenPrerender = { showPrerender = true },
+            onDismiss = { showOptions = false },
+        )
+    }
     if (showFilter) TextFilterDialog(vm, isPdf = ui.isPdf, onDismiss = { showFilter = false })
     if (showPrerender) PrerenderDialog(vm, currentSection = ui.section, sectionCount = ui.sectionCount, isPdf = ui.isPdf, onDismiss = { showPrerender = false })
 
@@ -1062,52 +1080,6 @@ private fun TranslationMenu(mode: TranslationMode, onSelect: (TranslationMode) -
                     text = { Text(label) },
                     trailingIcon = { if (m == mode) Icon(Icons.Default.Check, null) },
                     onClick = { open = false; onSelect(m) },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun AppearanceMenu(fontScale: Float, theme: ReaderTheme, pageMode: PageMode, vm: ReaderViewModel) {
-    var open by remember { mutableStateOf(false) }
-    Box {
-        IconButton(onClick = { open = true }) { Icon(Icons.Default.TextFields, "Apariencia") }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            Row(Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { vm.setFontScale(fontScale - 0.1f) }) { Text("A−", fontSize = 14.sp) }
-                Text("${(fontScale * 100).toInt()}%")
-                TextButton(onClick = { vm.setFontScale(fontScale + 0.1f) }) { Text("A+", fontSize = 20.sp) }
-            }
-            HorizontalDivider()
-            listOf(
-                ReaderTheme.SYSTEM to "Tema del sistema",
-                ReaderTheme.LIGHT to "Claro",
-                ReaderTheme.SEPIA to "Sepia",
-                ReaderTheme.DARK to "Oscuro",
-            ).forEach { (t, label) ->
-                DropdownMenuItem(
-                    text = { Text(label) },
-                    trailingIcon = { if (t == theme) Icon(Icons.Default.Check, null) },
-                    onClick = { vm.setTheme(t) },
-                )
-            }
-            HorizontalDivider()
-            Text(
-                "Pasar página",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 12.dp, top = 8.dp, bottom = 4.dp),
-            )
-            listOf(
-                PageMode.BUTTONS to "Con botones",
-                PageMode.SWIPE to "Deslizando (con animación)",
-                PageMode.CONTINUOUS to "Scroll continuo",
-            ).forEach { (m, label) ->
-                DropdownMenuItem(
-                    text = { Text(label) },
-                    trailingIcon = { if (m == pageMode) Icon(Icons.Default.Check, null) },
-                    onClick = { vm.setPageMode(m); open = false },
                 )
             }
         }

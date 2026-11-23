@@ -45,7 +45,7 @@ Formatos: **EPUB** y **PDF** (con texto; los PDF escaneados como imagen todavía
    - *Voz en español / Voz en inglés*: toca para elegir y pulsa 🔊 para escucharla.
    - *Voces IA (sin conexión)*: descarga voces más naturales. **Davefx (España)** es rápida y suena muy bien en casi cualquier móvil.
 5. **Ir a una página** → icono ☰ (Índice) → escribe el número.
-6. **Cómo pasar página** → menú **Aa** → *Con botones*, *Deslizando* o *Scroll continuo*.
+6. **Opciones de lectura** → botón de ajustes (icono de controles deslizantes) arriba en el lector: tema claro/oscuro/sepia, tamaño de letra, cómo pasar página (*Botones*, *Deslizar* o *Scroll continuo*), voz que narra, velocidad, tono, pausas, traducción y herramientas.
 7. **Más voces** → ⚙️ *Ajustes → Voces IA → Más voces (+180)*, o *Importar paquete* si tienes un archivo de voz `.tar.bz2`.
 8. **Pregenerar narración** (menú ⋮ del lector) → elige desde qué página, cuántas y la voz. Se genera en segundo plano con una notificación; puedes cancelar cuando quieras y lo ya hecho se conserva.
 9. **Texto roto** (menú ⋮ → *Filtro de texto*) → escribe lo que quieres quitar o reemplazar. También te muestra los caracteres raros de la página para quitarlos con un toque.

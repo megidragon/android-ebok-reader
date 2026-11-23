@@ -326,6 +326,46 @@ class ReaderViewModel(private val container: AppContainer, private val bookId: L
         }
     }
 
+    // ---------------- Panel de opciones del lector ----------------
+
+    /** Idioma en que se narra ahora mismo (el de la traducción si está activa). */
+    fun spokenLanguage(): String {
+        val s = narrationSettings.value
+        return if (s.translates(sourceLanguage)) s.targetLanguage else sourceLanguage
+    }
+
+    private val _voices = MutableStateFlow<List<VoiceInfo>>(emptyList())
+    /** Voces disponibles para el idioma narrado. */
+    val voices: StateFlow<List<VoiceInfo>> = _voices.asStateFlow()
+
+    fun loadVoices() = viewModelScope.launch {
+        _voices.value = runCatching { container.ttsRegistry.voices(spokenLanguage()) }.getOrDefault(emptyList())
+    }
+
+    fun setVoice(voice: VoiceInfo) = viewModelScope.launch { container.settings.setVoice(spokenLanguage(), voice.key) }
+
+    fun previewVoice(voice: VoiceInfo) = viewModelScope.launch {
+        val text = when (voice.locale.language) {
+            "es" -> "Así sonará la narración de este libro con esta voz."
+            "en" -> "This is how this book will sound with this voice."
+            else -> "Lectora."
+        }
+        val s = narrationSettings.value
+        runCatching { container.narration.previewVoice(voice, text, s.speechRate, s.pitch) }
+    }
+
+    fun setSpeechRate(v: Float) = viewModelScope.launch { container.settings.setSpeechRate(v) }
+    fun setPitch(v: Float) = viewModelScope.launch { container.settings.setPitch(v) }
+    fun setSentencePause(ms: Int) = viewModelScope.launch { container.settings.setSentencePause(ms) }
+    fun setParagraphPause(ms: Int) = viewModelScope.launch { container.settings.setParagraphPause(ms) }
+
+    val translationLanguages: List<String> get() = container.translationEngine.supportedLanguages()
+
+    fun setTargetLanguage(language: String) = viewModelScope.launch {
+        container.settings.setTargetLanguage(language)
+        loadVoices()
+    }
+
     // ---------------- Narración pregenerada ----------------
 
     data class PrerenderUi(
