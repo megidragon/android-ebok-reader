@@ -152,7 +152,7 @@ class LibraryRepository(
         val seen = HashSet<String>()
         for (f in files) {
             seen.add(f.uri.toString())
-            result += importOrUpdate(f.uri, f.name, f.size, f.format, folder.uri)
+            result += importOrUpdate(f.uri, f.name, f.size, f.format, folder.uri, f.relativePath)
         }
         for (book in db.books().inFolder(folder.uri)) {
             if (book.uri !in seen && !book.missing) {
@@ -164,11 +164,22 @@ class LibraryRepository(
         result
     }
 
-    private suspend fun importOrUpdate(uri: Uri, name: String, size: Long, format: BookFormat, folderUri: String?): ScanResult {
+    private suspend fun importOrUpdate(
+        uri: Uri,
+        name: String,
+        size: Long,
+        format: BookFormat,
+        folderUri: String?,
+        relativePath: String? = null,
+    ): ScanResult {
         val books = db.books()
         books.findByUri(uri.toString())?.let { existing ->
             if (existing.sizeBytes == size) {
                 if (existing.missing) books.setMissing(existing.id, false)
+                // Libros importados con versiones anteriores: completar su ruta en la carpeta.
+                if (relativePath != null && existing.relativePath != relativePath) {
+                    books.update(existing.copy(relativePath = relativePath, missing = false))
+                }
                 return ScanResult()
             }
         }
@@ -178,14 +189,22 @@ class LibraryRepository(
             if (known != null) {
                 // Mismo libro en otra ruta (movido/renombrado): se conserva el progreso.
                 if (known.uri != uri.toString() || known.missing) {
-                    books.update(known.copy(uri = uri.toString(), fileName = name, folderUri = folderUri ?: known.folderUri, missing = false))
+                    books.update(
+                        known.copy(
+                            uri = uri.toString(),
+                            fileName = name,
+                            folderUri = folderUri ?: known.folderUri,
+                            relativePath = relativePath ?: known.relativePath,
+                            missing = false,
+                        )
+                    )
                     documents.invalidate(known.id)
                     ScanResult(moved = 1)
                 } else {
                     ScanResult()
                 }
             } else {
-                importNew(uri, name, size, format, fingerprint, folderUri)
+                importNew(uri, name, size, format, fingerprint, folderUri, relativePath)
                 ScanResult(added = 1)
             }
         } catch (e: Exception) {
@@ -194,7 +213,15 @@ class LibraryRepository(
         }
     }
 
-    private suspend fun importNew(uri: Uri, name: String, size: Long, format: BookFormat, fingerprint: String, folderUri: String?) {
+    private suspend fun importNew(
+        uri: Uri,
+        name: String,
+        size: Long,
+        format: BookFormat,
+        fingerprint: String,
+        folderUri: String?,
+        relativePath: String? = null,
+    ) {
         val doc = opener.open(uri, format)
         try {
             val meta = doc.metadata
@@ -217,6 +244,7 @@ class LibraryRepository(
                     sizeBytes = size,
                     sectionCount = meta.sectionCount,
                     folderUri = folderUri,
+                    relativePath = relativePath,
                     addedAt = System.currentTimeMillis(),
                 )
             )
@@ -267,12 +295,14 @@ class LibraryRepository(
         changed
     }
 
-    private data class FoundFile(val uri: Uri, val name: String, val size: Long, val format: BookFormat)
+    /** [relativePath]: ruta dentro de la carpeta sincronizada, p. ej. "Sagas/Dune/dune-1.epub". */
+    private data class FoundFile(val uri: Uri, val name: String, val size: Long, val format: BookFormat, val relativePath: String)
 
     /** Recorre la carpeta (y subcarpetas) con DocumentsContract, mucho más rápido que DocumentFile. */
     private fun listBookFiles(tree: Uri): List<FoundFile> {
         val out = ArrayList<FoundFile>()
-        val pending = ArrayDeque<String>().apply { add(DocumentsContract.getTreeDocumentId(tree)) }
+        // (id del documento, ruta de la subcarpeta relativa a la raíz)
+        val pending = ArrayDeque<Pair<String, String>>().apply { add(DocumentsContract.getTreeDocumentId(tree) to "") }
         val projection = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
@@ -280,20 +310,21 @@ class LibraryRepository(
             DocumentsContract.Document.COLUMN_SIZE,
         )
         while (pending.isNotEmpty()) {
-            val parent = pending.removeFirst()
+            val (parent, dir) = pending.removeFirst()
             val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parent)
             resolver.query(children, projection, null, null, null)?.use { c ->
                 while (c.moveToNext()) {
                     val id = c.getString(0)
                     val name = c.getString(1) ?: continue
                     val mime = c.getString(2)
+                    val path = if (dir.isEmpty()) name else "$dir/$name"
                     if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                        if (!name.startsWith(".")) pending.add(id)
+                        if (!name.startsWith(".")) pending.add(id to path)
                         continue
                     }
                     val format = BookFormat.fromFileName(name) ?: BookFormat.fromMime(mime) ?: continue
                     val size = if (c.isNull(3)) 0L else c.getLong(3)
-                    out.add(FoundFile(DocumentsContract.buildDocumentUriUsingTree(tree, id), name, size, format))
+                    out.add(FoundFile(DocumentsContract.buildDocumentUriUsingTree(tree, id), name, size, format, path))
                 }
             }
         }

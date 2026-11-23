@@ -11,9 +11,27 @@ import com.lectora.core.database.CollectionWithCount
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import com.lectora.app.data.LibraryView
+import com.lectora.core.database.FolderEntity
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+
+data class FolderLocation(val rootUri: String, val dir: String)
+
+data class FolderEntry(val name: String, val location: FolderLocation, val bookCount: Int)
+
+/** Lo que se ve en un nivel de la vista por carpetas. */
+data class FolderContent(
+    /** Ruta desde la carpeta sincronizada (vacía en el nivel superior). */
+    val path: List<FolderEntry>,
+    val folders: List<FolderEntry>,
+    val books: List<BookWithProgress>,
+    /** Nivel superior (no se puede subir más). */
+    val isTop: Boolean,
+)
 
 class LibraryViewModel(private val container: AppContainer) : ViewModel() {
     private val library = container.library
@@ -25,6 +43,70 @@ class LibraryViewModel(private val container: AppContainer) : ViewModel() {
     val collections: StateFlow<List<CollectionWithCount>> =
         library.collections().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val scanning: StateFlow<Boolean> = library.scanning
+
+    // ---------------- Vista por carpetas ----------------
+
+    val libraryView: StateFlow<LibraryView> =
+        container.settings.libraryView.stateIn(viewModelScope, SharingStarted.Eagerly, LibraryView.FOLDERS)
+
+    fun setLibraryView(view: LibraryView) = viewModelScope.launch { container.settings.setLibraryView(view) }
+
+    /** Dónde estamos: null = nivel superior; si no, una carpeta sincronizada y una subcarpeta. */
+    private val _location = MutableStateFlow<FolderLocation?>(null)
+    val location: StateFlow<FolderLocation?> = _location.asStateFlow()
+
+    fun openFolder(location: FolderLocation?) {
+        _location.value = location
+    }
+
+    /** Sube un nivel. Devuelve false si ya está arriba del todo. */
+    fun goUp(): Boolean {
+        val loc = _location.value ?: return false
+        _location.value = when {
+            loc.dir.isNotEmpty() -> loc.copy(dir = loc.dir.substringBeforeLast('/', ""))
+            else -> null
+        }
+        return true
+    }
+
+    /** Contenido del nivel actual: subcarpetas y libros, respetando la estructura del disco. */
+    val folderContent: StateFlow<FolderContent?> = combine(library.allBooks(), library.folders(), _location) { books, roots, loc ->
+        buildFolderContent(books, roots, loc)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    private fun buildFolderContent(books: List<BookWithProgress>, roots: List<FolderEntity>, loc: FolderLocation?): FolderContent {
+        val rootUris = roots.map { it.uri }.toSet()
+        if (loc == null) {
+            val loose = books.filter { it.book.folderUri == null || it.book.folderUri !in rootUris }
+            val rootEntries = roots.mapNotNull { r ->
+                val count = books.count { it.book.folderUri == r.uri }
+                if (count == 0) null else FolderEntry(r.displayName, FolderLocation(r.uri, ""), count)
+            }
+            // Con una sola carpeta sincronizada y nada suelto, entrar directamente en ella.
+            if (rootEntries.size == 1 && loose.isEmpty()) {
+                return buildFolderContent(books, roots, rootEntries[0].location).copy(isTop = true)
+            }
+            return FolderContent(path = emptyList(), folders = rootEntries, books = loose, isTop = true)
+        }
+        val root = roots.firstOrNull { it.uri == loc.rootUri }
+        val inRoot = books.filter { it.book.folderUri == loc.rootUri }
+        val prefix = if (loc.dir.isEmpty()) "" else loc.dir + "/"
+        val sub = inRoot.filter { it.book.relativeDir.startsWith(prefix) && it.book.relativeDir != loc.dir }
+        val folders = sub.groupBy { it.book.relativeDir.removePrefix(prefix).substringBefore('/') }
+            .map { (name, list) -> FolderEntry(name, FolderLocation(loc.rootUri, prefix + name), list.size) }
+            .sortedBy { it.name.lowercase() }
+        val here = inRoot.filter { it.book.relativeDir == loc.dir }
+        // Ruta para la barra de navegación: carpeta raíz + cada subcarpeta.
+        val path = buildList {
+            add(FolderEntry(root?.displayName ?: "Carpeta", FolderLocation(loc.rootUri, ""), inRoot.size))
+            var acc = ""
+            loc.dir.split('/').filter { it.isNotEmpty() }.forEach { part ->
+                acc = if (acc.isEmpty()) part else "$acc/$part"
+                add(FolderEntry(part, FolderLocation(loc.rootUri, acc), 0))
+            }
+        }
+        return FolderContent(path = path, folders = folders, books = here, isTop = false)
+    }
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy

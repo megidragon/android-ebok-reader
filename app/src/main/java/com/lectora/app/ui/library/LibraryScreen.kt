@@ -71,6 +71,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.lectora.app.ui.components.BookCover
+import com.lectora.app.data.LibraryView
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Surface
 import com.lectora.core.database.BookEntity
 import com.lectora.core.database.BookWithProgress
 
@@ -168,7 +173,7 @@ fun LibraryScreen(
                         onAddFolder = { pickFolder.launch(null) },
                         onImport = { pickFiles.launch(arrayOf("application/epub+zip", "application/pdf")) },
                     )
-                    else -> BookGrid(all!!, onOpenBook, { bookMenu = it }, empty = "")
+                    else -> LibraryBrowser(vm, onOpenBook, onLongPress = { bookMenu = it })
                 }
                 2 -> CollectionsList(collections, onOpenCollection, vm)
             }
@@ -205,38 +210,132 @@ fun BookGrid(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
-        items(books, key = { it.book.id }) { item ->
-            Column(
-                Modifier.combinedClickable(
-                    onClick = { onOpenBook(item.book.id) },
-                    onLongClick = { onLongPress(item.book) },
-                )
+        items(books, key = { it.book.id }) { item -> BookTile(item, onOpenBook, onLongPress) }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun BookTile(item: BookWithProgress, onOpenBook: (Long) -> Unit, onLongPress: (BookEntity) -> Unit) {
+    Column(
+        Modifier.combinedClickable(
+            onClick = { onOpenBook(item.book.id) },
+            onLongClick = { onLongPress(item.book) },
+        )
+    ) {
+        BookCover(item.book.coverPath, item.book.title, Modifier.fillMaxWidth().aspectRatio(0.68f))
+        val fraction = item.progress?.fraction ?: 0f
+        if (fraction > 0f) {
+            LinearProgressIndicator(
+                progress = { fraction },
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(3.dp),
+            )
+        }
+        Text(
+            item.book.title,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        item.book.author?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/**
+ * Pestaña Biblioteca: por defecto respeta la estructura de subcarpetas de la carpeta
+ * sincronizada; con "Todo" muestra todos los libros juntos.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun LibraryBrowser(vm: LibraryViewModel, onOpenBook: (Long) -> Unit, onLongPress: (BookEntity) -> Unit) {
+    val view by vm.libraryView.collectAsState()
+    val all by vm.all.collectAsState()
+    val content by vm.folderContent.collectAsState()
+    val location by vm.location.collectAsState()
+
+    // Atrás sube una carpeta (en vez de salir de la app).
+    androidx.activity.compose.BackHandler(enabled = view == LibraryView.FOLDERS && location != null && content?.isTop == false) {
+        vm.goUp()
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            androidx.compose.material3.FilterChip(
+                selected = view == LibraryView.FOLDERS,
+                onClick = { vm.setLibraryView(LibraryView.FOLDERS) },
+                label = { Text("Carpetas") },
+                leadingIcon = { Icon(Icons.Default.Folder, null, Modifier.size(18.dp)) },
+            )
+            Spacer(Modifier.width(8.dp))
+            androidx.compose.material3.FilterChip(
+                selected = view == LibraryView.ALL,
+                onClick = { vm.setLibraryView(LibraryView.ALL) },
+                label = { Text("Todo (${all?.size ?: 0})") },
+            )
+        }
+        if (view == LibraryView.ALL) {
+            BookGrid(all.orEmpty(), onOpenBook, onLongPress, empty = "")
+            return@Column
+        }
+        val c = content ?: return@Column
+        // Ruta: Biblioteca › Carpeta › Subcarpeta (cada tramo es pulsable).
+        if (c.path.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                BookCover(item.book.coverPath, item.book.title, Modifier.fillMaxWidth().aspectRatio(0.68f))
-                val fraction = item.progress?.fraction ?: 0f
-                if (fraction > 0f) {
-                    LinearProgressIndicator(
-                        progress = { fraction },
-                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(3.dp),
-                    )
-                }
-                Text(
-                    item.book.title,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-                item.book.author?.let {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                TextButton(onClick = { vm.openFolder(null) }) { Text("Biblioteca") }
+                c.path.forEachIndexed { i, entry ->
+                    Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(onClick = { vm.openFolder(entry.location) }, enabled = i < c.path.size - 1) {
+                        Text(entry.name, maxLines = 1)
+                    }
                 }
             }
+        }
+        if (c.folders.isEmpty() && c.books.isEmpty()) {
+            Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) { Text("Carpeta vacía.") }
+            return@Column
+        }
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(112.dp),
+            contentPadding = PaddingValues(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            items(c.folders, key = { "f:" + it.location.rootUri + "/" + it.location.dir }, span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { folder ->
+                Surface(
+                    onClick = { vm.openFolder(folder.location) },
+                    shape = MaterialTheme.shapes.medium,
+                    tonalElevation = 2.dp,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(12.dp))
+                        Text(folder.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            if (folder.bookCount == 1) "1 libro" else "${folder.bookCount} libros",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            items(c.books, key = { it.book.id }) { item -> BookTile(item, onOpenBook, onLongPress) }
         }
     }
 }

@@ -34,7 +34,12 @@ data class BookEntity(
     val lastOpenedAt: Long? = null,
     /** El archivo ya no se encuentra en la carpeta sincronizada. */
     val missing: Boolean = false,
-)
+    /** Ruta dentro de la carpeta sincronizada, p. ej. "Sagas/Dune/dune-1.epub" (null si se importó suelto). */
+    val relativePath: String? = null,
+) {
+    /** Subcarpeta que contiene el libro dentro de su carpeta sincronizada ("" = raíz). */
+    val relativeDir: String get() = relativePath?.substringBeforeLast('/', "").orEmpty()
+}
 
 @Entity(tableName = "collections", indices = [Index(value = ["name"], unique = true)])
 data class CollectionEntity(

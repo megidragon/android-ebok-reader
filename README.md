@@ -17,7 +17,7 @@ Abres tu EPUB o PDF, pulsas ▶ y Lectora te narra la historia con voz natural, 
 | ⏬ **Narración pregenerada** | Para voces pesadas: genera y guarda por adelantado el audio de las páginas que quieras (con la voz e idioma elegidos) y luego se reproduce al instante. Si llegas a una página sin pregenerar, sigue en vivo sin cortes. |
 | 📖 **Pasar página a tu gusto** | Con botones, deslizando con el dedo (con animación) o en scroll continuo, como un documento infinito. |
 | 🧹 **Filtro de texto** | Quita o reemplaza caracteres rotos o textos molestos de un libro (o de todos). Se aplica al leer, traducir y narrar. |
-| 📚 **Tu biblioteca** | Elige una carpeta y Lectora la mantiene sincronizada: detecta libros nuevos, movidos o borrados. Crea colecciones (sagas, pendientes, favoritos…). |
+| 📚 **Tu biblioteca** | Elige una carpeta y Lectora la mantiene sincronizada: detecta libros nuevos, movidos o borrados. Respeta tus subcarpetas (puedes navegarlas) o te muestra todo junto. Crea colecciones (sagas, pendientes, favoritos…). |
 | 🔖 **Recuerda por dónde ibas** | Cada libro guarda tu página, aunque cambies el archivo de carpeta. |
 | 📄 **Libros enormes** | Pensado para PDF de más de 10.000 páginas: abre rápido y puedes saltar a cualquier página escribiendo el número. |
 | 😴 **Temporizador** | Para dormirte escuchando: se detiene en X minutos o al terminar el capítulo. |
@@ -38,7 +38,7 @@ Formatos: **EPUB** y **PDF** (con texto; los PDF escaneados como imagen todavía
 
 ## 🚀 Primeros pasos
 
-1. **Añade tus libros** → botón **+** → *Sincronizar una carpeta* (o *Importar archivos*).
+1. **Añade tus libros** → botón **+** → *Sincronizar una carpeta* (o *Importar archivos*). En *Biblioteca* verás tus subcarpetas tal como las tienes en el móvil; toca *Todo* para ver todos los libros juntos.
 2. **Abre un libro** y pulsa ▶ para que te lo lea. Toca cualquier párrafo para *"Narrar desde aquí"*.
 3. **¿Está en inglés?** Pulsa el icono de traducir (arriba) → *Traducido* o *Bilingüe*. La primera vez descarga el idioma (unos 30 MB, solo una vez).
 4. **Elige tu voz** en ⚙️ *Ajustes*:

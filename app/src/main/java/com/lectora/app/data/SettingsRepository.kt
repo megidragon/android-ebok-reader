@@ -16,6 +16,9 @@ import kotlinx.coroutines.flow.map
 
 enum class ReaderTheme { SYSTEM, LIGHT, SEPIA, DARK }
 
+/** Cómo se muestra la biblioteca: respetando las subcarpetas (por defecto) o todo junto. */
+enum class LibraryView { FOLDERS, ALL }
+
 /** Cómo se pasa de una página/capítulo a la siguiente. */
 enum class PageMode {
     /** Una sección por pantalla, con botones Anterior/Siguiente. */
@@ -54,6 +57,7 @@ class SettingsRepository(context: Context) {
         val lineHeight = floatPreferencesKey("line_height")
         val wifiOnly = booleanPreferencesKey("wifi_only")
         val pageMode = stringPreferencesKey("page_mode")
+        val libraryView = stringPreferencesKey("library_view")
     }
 
     val narration: Flow<NarrationSettings> = store.data.map { p -> p.toNarration() }.distinctUntilChanged()
@@ -66,6 +70,12 @@ class SettingsRepository(context: Context) {
             pageMode = p[Keys.pageMode]?.let { runCatching { PageMode.valueOf(it) }.getOrNull() } ?: PageMode.BUTTONS,
         )
     }.distinctUntilChanged()
+
+    val libraryView: Flow<LibraryView> = store.data.map { p ->
+        p[Keys.libraryView]?.let { runCatching { LibraryView.valueOf(it) }.getOrNull() } ?: LibraryView.FOLDERS
+    }.distinctUntilChanged()
+
+    suspend fun setLibraryView(view: LibraryView) = store.edit { it[Keys.libraryView] = view.name }
 
     val wifiOnlyDownloads: Flow<Boolean> = store.data.map { it[Keys.wifiOnly] ?: false }.distinctUntilChanged()
 

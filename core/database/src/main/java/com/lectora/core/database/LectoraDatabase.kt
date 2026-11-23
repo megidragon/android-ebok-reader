@@ -6,6 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.lectora.core.model.BookFormat
 
 class Converters {
@@ -22,7 +24,7 @@ class Converters {
         TranslationEntity::class,
         FolderEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -34,9 +36,18 @@ abstract class LectoraDatabase : RoomDatabase() {
     abstract fun folders(): FolderDao
 
     companion object {
+        /** v2: ruta del libro dentro de su carpeta sincronizada (para ver la estructura de subcarpetas). */
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE books ADD COLUMN relativePath TEXT")
+            }
+        }
+
         fun create(context: Context): LectoraDatabase =
             Room.databaseBuilder(context.applicationContext, LectoraDatabase::class.java, "lectora.db")
-                .fallbackToDestructiveMigration(dropAllTables = true)
+                // Las actualizaciones conservan la biblioteca, el progreso y las colecciones.
+                .addMigrations(MIGRATION_1_2)
+                .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                 .build()
     }
 }
