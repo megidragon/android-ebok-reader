@@ -66,6 +66,12 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
         refreshVoices(force = true)
     }
 
+    // ---- Biblioteca ----
+    val titleSource: StateFlow<com.lectora.app.data.TitleSource> =
+        settings.titleSource.stateIn(viewModelScope, SharingStarted.Eagerly, com.lectora.app.data.TitleSource.FILE_NAME)
+
+    fun setTitleSource(source: com.lectora.app.data.TitleSource) = viewModelScope.launch { settings.setTitleSource(source) }
+
     // ---- Narración pregenerada ----
     private val _prerenderBytes = MutableStateFlow(0L)
     val prerenderBytes: StateFlow<Long> = _prerenderBytes.asStateFlow()

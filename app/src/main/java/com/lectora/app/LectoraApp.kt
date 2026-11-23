@@ -7,6 +7,8 @@ import com.lectora.app.data.LibraryRepository
 import com.lectora.app.data.LibraryScanWorker
 import com.lectora.app.data.SettingsRepository
 import com.lectora.app.data.TextFilterRepository
+import com.lectora.app.data.displayTitle
+import kotlinx.coroutines.flow.first
 import com.lectora.core.database.LectoraDatabase
 import com.lectora.engine.text.BookOpener
 import com.lectora.engine.translation.MlKitTranslationEngine
@@ -50,7 +52,8 @@ class AppContainer(app: Application) {
         val book = library.getBook(bookId) ?: error("Libro $bookId no encontrado")
         return NarrationBook(
             bookId = book.id,
-            title = book.title,
+            // Mismo título que se ve en la biblioteca (notificación, pantalla de bloqueo…).
+            title = book.displayTitle(settings.titleSource.first()),
             author = book.author,
             coverPath = book.coverPath,
             language = book.language ?: "en",

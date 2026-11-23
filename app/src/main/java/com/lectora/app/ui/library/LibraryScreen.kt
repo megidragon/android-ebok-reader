@@ -71,6 +71,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.lectora.app.ui.components.BookCover
+import com.lectora.app.ui.components.LocalTitleSource
+import com.lectora.app.data.displayTitle
 import com.lectora.app.data.LibraryView
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -223,7 +225,7 @@ private fun BookTile(item: BookWithProgress, onOpenBook: (Long) -> Unit, onLongP
             onLongClick = { onLongPress(item.book) },
         )
     ) {
-        BookCover(item.book.coverPath, item.book.title, Modifier.fillMaxWidth().aspectRatio(0.68f))
+        BookCover(item.book.coverPath, item.book.displayTitle(LocalTitleSource.current), Modifier.fillMaxWidth().aspectRatio(0.68f))
         val fraction = item.progress?.fraction ?: 0f
         if (fraction > 0f) {
             LinearProgressIndicator(
@@ -232,7 +234,7 @@ private fun BookTile(item: BookWithProgress, onOpenBook: (Long) -> Unit, onLongP
             )
         }
         Text(
-            item.book.title,
+            item.book.displayTitle(LocalTitleSource.current),
             style = MaterialTheme.typography.bodyMedium,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
@@ -430,7 +432,7 @@ private fun BookActionsDialog(book: BookEntity, vm: LibraryViewModel, onDismiss:
     var confirmDelete by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(book.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        title = { Text(book.displayTitle(LocalTitleSource.current), maxLines = 2, overflow = TextOverflow.Ellipsis) },
         text = {
             Column {
                 Text("Colecciones", style = MaterialTheme.typography.titleSmall)
@@ -469,7 +471,7 @@ private fun BookActionsDialog(book: BookEntity, vm: LibraryViewModel, onDismiss:
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            title = { Text("¿Quitar \"${book.title}\"?") },
+            title = { Text("¿Quitar \"${book.displayTitle(LocalTitleSource.current)}\"?") },
             text = { Text("Se borra de la biblioteca junto con su progreso. El archivo original no se toca.") },
             confirmButton = {
                 TextButton(onClick = { vm.removeBook(book); confirmDelete = false; onDismiss() }) { Text("Quitar") }

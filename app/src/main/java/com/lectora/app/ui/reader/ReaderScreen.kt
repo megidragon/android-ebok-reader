@@ -75,6 +75,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.lectora.app.data.PageMode
+import com.lectora.app.data.displayTitle
+import com.lectora.app.ui.components.LocalTitleSource
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FilterAlt
@@ -217,7 +219,7 @@ fun ReaderScreen(
                 ),
                 title = {
                     Column {
-                        Text(ui.book?.title.orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                        Text(ui.book?.displayTitle(LocalTitleSource.current).orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
                         Text(
                             listOfNotNull(shownTitle, if (ui.sectionCount > 0) "${ui.section + 1}/${ui.sectionCount}" else null).joinToString(" · "),
                             maxLines = 1,

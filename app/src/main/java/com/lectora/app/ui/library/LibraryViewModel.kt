@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import com.lectora.app.data.LibraryView
+import com.lectora.app.data.displayTitle
 import com.lectora.core.database.FolderEntity
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -38,8 +39,13 @@ class LibraryViewModel(private val container: AppContainer) : ViewModel() {
 
     val reading: StateFlow<List<BookWithProgress>> =
         library.readingBooks().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    /** Todos los libros, ordenados por el título que se muestra (nombre de archivo o título interno). */
+    private val sortedBooks = combine(library.allBooks(), container.settings.titleSource) { books, source ->
+        books.sortedBy { it.book.displayTitle(source).lowercase() }
+    }
+
     val all: StateFlow<List<BookWithProgress>?> =
-        library.allBooks().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+        sortedBooks.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
     val collections: StateFlow<List<CollectionWithCount>> =
         library.collections().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val scanning: StateFlow<Boolean> = library.scanning
@@ -70,7 +76,7 @@ class LibraryViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     /** Contenido del nivel actual: subcarpetas y libros, respetando la estructura del disco. */
-    val folderContent: StateFlow<FolderContent?> = combine(library.allBooks(), library.folders(), _location) { books, roots, loc ->
+    val folderContent: StateFlow<FolderContent?> = combine(sortedBooks, library.folders(), _location) { books, roots, loc ->
         buildFolderContent(books, roots, loc)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 

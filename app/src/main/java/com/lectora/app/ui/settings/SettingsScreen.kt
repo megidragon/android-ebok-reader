@@ -228,6 +228,22 @@ fun SettingsScreen(vm: SettingsViewModel, onBack: () -> Unit) {
                 },
             )
 
+            Section("Biblioteca")
+            val titleSource by vm.titleSource.collectAsState()
+            listOf(
+                com.lectora.app.data.TitleSource.FILE_NAME to ("Nombre del archivo" to "El nombre original del archivo en tu móvil (recomendado)."),
+                com.lectora.app.data.TitleSource.METADATA to ("Título interno del libro" to "El título guardado dentro del EPUB/PDF. A veces viene traducido o es distinto del nombre del archivo."),
+            ).forEach { (source, texts) ->
+                ListItem(
+                    headlineContent = { Text(texts.first) },
+                    supportingContent = { Text(texts.second) },
+                    leadingContent = {
+                        androidx.compose.material3.RadioButton(selected = titleSource == source, onClick = { vm.setTitleSource(source) })
+                    },
+                    modifier = Modifier.clickable { vm.setTitleSource(source) },
+                )
+            }
+
             Section("Carpetas sincronizadas")
             if (folders.isEmpty()) Hint("Ninguna. Agrega una desde la biblioteca (+).")
             folders.forEach { f ->

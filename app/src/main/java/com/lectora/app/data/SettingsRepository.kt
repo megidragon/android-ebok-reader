@@ -16,6 +16,21 @@ import kotlinx.coroutines.flow.map
 
 enum class ReaderTheme { SYSTEM, LIGHT, SEPIA, DARK }
 
+/** Qué título se muestra para cada libro. */
+enum class TitleSource {
+    /** Nombre del archivo original, sin extensión (por defecto). */
+    FILE_NAME,
+
+    /** Título guardado dentro del EPUB/PDF (metadatos); a veces viene traducido o es distinto. */
+    METADATA,
+}
+
+/** Título a mostrar de un libro según la preferencia del usuario. */
+fun com.lectora.core.database.BookEntity.displayTitle(source: TitleSource): String = when (source) {
+    TitleSource.FILE_NAME -> fileName.substringBeforeLast('.').ifBlank { title }
+    TitleSource.METADATA -> title
+}
+
 /** Cómo se muestra la biblioteca: respetando las subcarpetas (por defecto) o todo junto. */
 enum class LibraryView { FOLDERS, ALL }
 
@@ -58,6 +73,7 @@ class SettingsRepository(context: Context) {
         val wifiOnly = booleanPreferencesKey("wifi_only")
         val pageMode = stringPreferencesKey("page_mode")
         val libraryView = stringPreferencesKey("library_view")
+        val titleSource = stringPreferencesKey("title_source")
     }
 
     val narration: Flow<NarrationSettings> = store.data.map { p -> p.toNarration() }.distinctUntilChanged()
@@ -76,6 +92,12 @@ class SettingsRepository(context: Context) {
     }.distinctUntilChanged()
 
     suspend fun setLibraryView(view: LibraryView) = store.edit { it[Keys.libraryView] = view.name }
+
+    val titleSource: Flow<TitleSource> = store.data.map { p ->
+        p[Keys.titleSource]?.let { runCatching { TitleSource.valueOf(it) }.getOrNull() } ?: TitleSource.FILE_NAME
+    }.distinctUntilChanged()
+
+    suspend fun setTitleSource(source: TitleSource) = store.edit { it[Keys.titleSource] = source.name }
 
     val wifiOnlyDownloads: Flow<Boolean> = store.data.map { it[Keys.wifiOnly] ?: false }.distinctUntilChanged()
 

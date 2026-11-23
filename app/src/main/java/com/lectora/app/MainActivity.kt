@@ -57,9 +57,12 @@ class MainActivity : ComponentActivity() {
         handleIntent(intent)
 
         setContent {
+            val titleSource by container.settings.titleSource.collectAsState(initial = com.lectora.app.data.TitleSource.FILE_NAME)
             LectoraTheme {
-                NotificationPermission()
-                LectoraNavHost(container, player, openPlayerRequest)
+                androidx.compose.runtime.CompositionLocalProvider(com.lectora.app.ui.components.LocalTitleSource provides titleSource) {
+                    NotificationPermission()
+                    LectoraNavHost(container, player, openPlayerRequest)
+                }
             }
         }
     }
