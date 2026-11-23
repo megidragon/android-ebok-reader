@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Libro abierto con ondas de sonido -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="@color/icon_foreground"
+        android:pathData="M30,40 C38,36 46,36 52,40 L52,72 C46,68 38,68 30,72 Z" />
+    <path
+        android:fillColor="@color/icon_foreground"
+        android:pathData="M56,40 C62,36 70,36 78,40 L78,72 C70,68 62,68 56,72 Z" />
+    <path
+        android:strokeColor="@color/icon_foreground"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M45,31 Q54,26 63,31" />
+    <path
+        android:strokeColor="@color/icon_foreground"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M40,25 Q54,17 68,25" />
+</vector>

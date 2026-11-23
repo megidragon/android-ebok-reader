@@ -1,0 +1,15 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.kotlin/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Firma de release (NO subir)
+keystore/
+keystore.properties
+*.jks
+*.keystore
