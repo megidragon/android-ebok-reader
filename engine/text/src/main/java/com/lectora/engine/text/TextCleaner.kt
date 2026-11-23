@@ -14,9 +14,30 @@ object TextCleaner {
         RegexOption.IGNORE_CASE,
     )
 
+    /**
+     * Carácter fuera del plano básico (letras "decorativas" 𝐇𝐨𝐥𝐚, emojis…) cuyo UTF-16 se leyó
+     * como Latin-1: aparece como 4 caracteres, p. ej. "Ø5Ül". Pasa en PDF convertidos desde web.
+     */
+    private val brokenSurrogatePair = Regex("[\\u00D8-\\u00DB][\\u0000-\\u00FF][\\u00DC-\\u00DF][\\u0000-\\u00FF]")
+
+    /** Repara ese texto: "Ø5Ü..." -> "𝐇..." -> "H" (las letras decorativas pasan a normales). */
+    fun repairUtf16AsLatin1(text: String): String {
+        if (text.none { it in 'Ø'..'Û' }) return text
+        return brokenSurrogatePair.replace(text) { m ->
+            val s = m.value
+            val high = ((s[0].code shl 8) or s[1].code).toChar()
+            val low = ((s[2].code shl 8) or s[3].code).toChar()
+            if (Character.isSurrogatePair(high, low)) {
+                java.text.Normalizer.normalize(String(charArrayOf(high, low)), java.text.Normalizer.Form.NFKC)
+            } else {
+                s
+            }
+        }
+    }
+
     /** Normaliza espacios, ligaduras y caracteres invisibles de una línea o párrafo. */
     fun normalize(text: String): String {
-        var t = text
+        var t = repairUtf16AsLatin1(text)
         if (t.any { it in 'ﬀ'..'ﬆ' }) ligatures.forEach { (k, v) -> t = t.replace(k, v) }
         t = t.replace("­", "") // guion blando
             .replace("​", "")

@@ -32,7 +32,9 @@ class SherpaOnnxBackend(
                 vits = OfflineTtsVitsModelConfig(
                     model = model.file("model")!!,
                     tokens = model.file("tokens")!!,
-                    dataDir = model.file("dataDir")!!,
+                    // Piper usa espeak-ng; otros VITS (p. ej. mimic3) pueden traer un léxico.
+                    dataDir = model.file("dataDir").orEmpty(),
+                    lexicon = model.file("lexicon").orEmpty(),
                 ),
                 numThreads = numThreads,
                 provider = "cpu",

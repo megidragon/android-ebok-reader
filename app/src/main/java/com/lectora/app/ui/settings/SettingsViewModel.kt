@@ -8,6 +8,10 @@ import com.lectora.engine.tts.VoiceInfo
 import com.lectora.engine.tts.neural.CatalogVoice
 import com.lectora.engine.tts.neural.InstallState
 import com.lectora.engine.tts.neural.NeuralVoiceCatalog
+import com.lectora.engine.tts.neural.NeuralVoiceModel
+import com.lectora.engine.tts.neural.PiperOnlineCatalog
+import android.net.Uri
+import android.provider.OpenableColumns
 import com.lectora.narration.NarrationSettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -54,8 +58,54 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
-    fun uninstallAiVoice(voice: CatalogVoice) = viewModelScope.launch {
-        container.voiceInstaller.uninstall(voice)
+    fun uninstallAiVoice(voice: CatalogVoice) = uninstallAiVoice(voice.id)
+
+    fun uninstallAiVoice(id: String) = viewModelScope.launch {
+        container.voiceInstaller.uninstall(id)
+        _voices.value = emptyMap()
+        refreshVoices(force = true)
+    }
+
+    /** Voces de IA instaladas (incluidas las añadidas por el usuario). */
+    val installedAi: StateFlow<List<NeuralVoiceModel>> = container.voiceInstaller.installed
+
+    // ---- Catálogo online de voces Piper (~185 voces, ~40 idiomas) ----
+    private val _online = MutableStateFlow<List<CatalogVoice>?>(null)
+    val online: StateFlow<List<CatalogVoice>?> = _online.asStateFlow()
+    private val _onlineError = MutableStateFlow<String?>(null)
+    val onlineError: StateFlow<String?> = _onlineError.asStateFlow()
+
+    fun loadOnlineCatalog() = viewModelScope.launch {
+        if (_online.value != null) return@launch
+        _onlineError.value = null
+        runCatching { PiperOnlineCatalog.fetch() }
+            .onSuccess { _online.value = it }
+            .onFailure { _onlineError.value = "No se pudo cargar el catálogo: ${it.message}" }
+    }
+
+    /** Importa un paquete de voz (.tar.bz2 de sherpa-onnx) elegido por el usuario. */
+    fun importVoicePackage(uri: Uri) = viewModelScope.launch {
+        val resolver = container.context.contentResolver
+        var name = uri.lastPathSegment ?: "voz.tar.bz2"
+        var size = 0L
+        runCatching {
+            resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    c.getString(0)?.let { name = it }
+                    if (!c.isNull(1)) size = c.getLong(1)
+                }
+            }
+        }
+        if (!name.endsWith(".tar.bz2") && !name.endsWith(".tbz2")) {
+            message.value = "Elige un paquete de voz .tar.bz2 (formato de sherpa-onnx)."
+            return@launch
+        }
+        message.value = "Importando «$name»…"
+        val id = container.voiceInstaller.installFromStream(name, size) {
+            resolver.openInputStream(uri) ?: throw java.io.IOException("No se pudo abrir el archivo")
+        }
+        val failed = container.voiceInstaller.states.value[id] as? InstallState.Failed
+        message.value = failed?.let { "No se pudo importar: ${it.message}" } ?: "Voz importada. Elígela en «Voz en …»."
         _voices.value = emptyMap()
         refreshVoices(force = true)
     }

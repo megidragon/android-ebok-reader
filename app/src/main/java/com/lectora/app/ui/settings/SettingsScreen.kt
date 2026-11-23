@@ -64,6 +64,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.lectora.app.ui.settings.SettingsViewModel.Companion.displayLanguage
 import com.lectora.engine.tts.VoiceInfo
+import androidx.compose.foundation.layout.Box
 import com.lectora.engine.tts.neural.CatalogVoice
 import com.lectora.engine.tts.neural.InstallState
 
@@ -300,6 +301,43 @@ private fun AiVoicesSection(vm: SettingsViewModel) {
             },
         )
     }
+    // Voces añadidas por el usuario (catálogo online o paquete importado).
+    val installedAi by vm.installedAi.collectAsState()
+    val builtinIds = remember { vm.aiCatalog.map { it.id }.toSet() }
+    val extra = installedAi.filter { it.id !in builtinIds }
+    var confirmDeleteExtra by remember { mutableStateOf<com.lectora.engine.tts.neural.NeuralVoiceModel?>(null) }
+    if (extra.isNotEmpty()) {
+        Text(
+            "Otras voces instaladas",
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(start = 16.dp, top = 8.dp),
+        )
+        extra.forEach { model ->
+            ListItem(
+                headlineContent = { Text(model.name) },
+                supportingContent = {
+                    val langs = model.speakers.map { it.lang.substringBefore('-') }.distinct()
+                        .joinToString { displayLanguage(it) }
+                    val n = model.speakers.size
+                    Text("${if (model.family == "kokoro") "Kokoro" else "Piper"} · $langs · ${if (n == 1) "1 voz" else "$n voces"}")
+                },
+                trailingContent = { IconButton(onClick = { confirmDeleteExtra = model }) { Icon(Icons.Default.Delete, "Eliminar voz") } },
+            )
+        }
+    }
+
+    var showCatalog by remember { mutableStateOf(false) }
+    val importLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let { vm.importVoicePackage(it) } }
+    Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { showCatalog = true; vm.loadOnlineCatalog() }) { Text("Más voces (+180)") }
+        OutlinedButton(onClick = { importLauncher.launch(arrayOf("*/*")) }) { Text("Importar paquete") }
+    }
+    Hint("«Más voces» lista todas las voces Piper disponibles (unos 40 idiomas). «Importar paquete» instala un archivo .tar.bz2 de voz de sherpa-onnx que tengas en el móvil (Piper/VITS o Kokoro).")
+
+    if (showCatalog) VoiceCatalogDialog(vm, states, onDismiss = { showCatalog = false })
+
     confirmDelete?.let { voice ->
         AlertDialog(
             onDismissRequest = { confirmDelete = null },
@@ -309,6 +347,87 @@ private fun AiVoicesSection(vm: SettingsViewModel) {
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancelar") } },
         )
     }
+    confirmDeleteExtra?.let { model ->
+        AlertDialog(
+            onDismissRequest = { confirmDeleteExtra = null },
+            title = { Text("¿Eliminar «${model.name}»?") },
+            text = { Text("Se borra del móvil. Puedes volver a instalarla cuando quieras.") },
+            confirmButton = { TextButton(onClick = { vm.uninstallAiVoice(model.id); confirmDeleteExtra = null }) { Text("Eliminar") } },
+            dismissButton = { TextButton(onClick = { confirmDeleteExtra = null }) { Text("Cancelar") } },
+        )
+    }
+}
+
+/** Catálogo online de voces Piper, filtrado por idioma. */
+@Composable
+private fun VoiceCatalogDialog(vm: SettingsViewModel, states: Map<String, InstallState>, onDismiss: () -> Unit) {
+    val online by vm.online.collectAsState()
+    val error by vm.onlineError.collectAsState()
+    val target by vm.narration.collectAsState()
+    var language by remember { mutableStateOf(target.targetLanguage) }
+    var languageMenu by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Más voces de IA") },
+        text = {
+            Column {
+                val list = online
+                when {
+                    error != null -> Column {
+                        Text(error!!, color = MaterialTheme.colorScheme.error)
+                        TextButton(onClick = { vm.loadOnlineCatalog() }) { Text("Reintentar") }
+                    }
+                    list == null -> Box(Modifier.fillMaxWidth().height(160.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                    else -> {
+                        val languages = list.map { it.language }.distinct().sortedBy { displayLanguage(it) }
+                        Box {
+                            OutlinedButton(onClick = { languageMenu = true }) {
+                                Text("Idioma: ${displayLanguage(language)} (${list.count { it.language == language }})")
+                            }
+                            androidx.compose.material3.DropdownMenu(expanded = languageMenu, onDismissRequest = { languageMenu = false }) {
+                                languages.forEach { l ->
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text("${displayLanguage(l)} (${list.count { it.language == l }})") },
+                                        onClick = { language = l; languageMenu = false },
+                                    )
+                                }
+                            }
+                        }
+                        val voices = list.filter { it.language == language }
+                        LazyColumn(Modifier.height(400.dp)) {
+                            items(voices, key = { it.id }) { voice ->
+                                val state = states[voice.id] ?: InstallState.NotInstalled
+                                ListItem(
+                                    headlineContent = { Text(voice.name) },
+                                    supportingContent = {
+                                        Text(
+                                            when (state) {
+                                                is InstallState.Downloading -> "Descargando… ${(state.fraction * 100).toInt()} %"
+                                                InstallState.Extracting -> "Instalando…"
+                                                InstallState.Installed -> "Instalada · ${voice.description}"
+                                                is InstallState.Failed -> "Error: ${state.message}"
+                                                InstallState.NotInstalled -> "${voice.sizeMb} MB · ${voice.description}"
+                                            },
+                                            color = if (state is InstallState.Failed) MaterialTheme.colorScheme.error else androidx.compose.ui.graphics.Color.Unspecified,
+                                        )
+                                    },
+                                    trailingContent = {
+                                        when (state) {
+                                            InstallState.Installed -> Icon(Icons.Default.Check, "Instalada")
+                                            is InstallState.Downloading, InstallState.Extracting ->
+                                                CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                                            else -> IconButton(onClick = { vm.installAiVoice(voice) }) { Icon(Icons.Default.Download, "Descargar voz") }
+                                        }
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
+    )
 }
 
 @Composable

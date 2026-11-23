@@ -21,6 +21,7 @@ import kotlinx.coroutines.launch
 
 /** Inyección de dependencias manual: un único contenedor por proceso. */
 class AppContainer(app: Application) {
+    val context: android.content.Context = app
     val database = LectoraDatabase.create(app)
     val opener = BookOpener(app)
     val documents = DocumentCache(opener)

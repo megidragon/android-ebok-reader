@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.lectora.app.AppContainer
+import com.lectora.app.data.PageMode
 import com.lectora.app.data.ReaderSettings
 import com.lectora.app.data.ReaderTheme
 import com.lectora.core.database.BookEntity
@@ -16,6 +17,7 @@ import com.lectora.engine.text.TocEntry
 import com.lectora.engine.text.pdf.PdfPageRenderer
 import com.lectora.engine.translation.ModelNotDownloadedException
 import com.lectora.narration.NarrationSettings
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -23,6 +25,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -31,21 +35,29 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
+/** Contenido ya cargado de una sección (capítulo o página), con su traducción parcial. */
+data class SectionContent(
+    val section: Int,
+    val title: String?,
+    val paragraphs: List<String>,
+    /** Traducción por índice de párrafo (se va completando). */
+    val translations: Map<Int, String> = emptyMap(),
+    /** Título traducido (null mientras no esté listo). */
+    val translatedTitle: String? = null,
+)
+
 data class ReaderUi(
     val loading: Boolean = true,
     val error: String? = null,
     val book: BookEntity? = null,
+    /** Sección "actual": la que se ve (o la primera visible en scroll continuo). */
     val section: Int = 0,
     val sectionCount: Int = 0,
     val sectionTitle: String? = null,
-    /** Título de la sección traducido (null mientras no esté listo). */
-    val translatedTitle: String? = null,
     val paragraphs: List<String> = emptyList(),
-    /** Traducción por índice de párrafo (se va completando). */
-    val translations: Map<Int, String> = emptyMap(),
     val translating: Boolean = false,
     val translationError: String? = null,
-    /** Párrafo al que desplazarse tras cargar la sección; cambia [scrollRequest] para forzarlo. */
+    /** Párrafo al que desplazarse tras un salto; cambia [scrollRequest] para forzarlo. */
     val scrollToParagraph: Int = 0,
     val scrollRequest: Int = 0,
 ) {
@@ -57,15 +69,23 @@ class ReaderViewModel(private val container: AppContainer, private val bookId: L
     private val _ui = MutableStateFlow(ReaderUi())
     val ui: StateFlow<ReaderUi> = _ui.asStateFlow()
 
+    /**
+     * Secciones cargadas (la actual y sus vecinas). Las usan los modos "deslizar" y "scroll
+     * continuo", que muestran varias secciones a la vez; se mantienen acotadas en memoria.
+     */
+    private val _sections = MutableStateFlow<Map<Int, SectionContent>>(emptyMap())
+    val sections: StateFlow<Map<Int, SectionContent>> = _sections.asStateFlow()
+
     val readerSettings: StateFlow<ReaderSettings> =
         container.settings.reader.stateIn(viewModelScope, SharingStarted.Eagerly, ReaderSettings())
     val narrationSettings: StateFlow<NarrationSettings> =
         container.settings.narration.stateIn(viewModelScope, SharingStarted.Eagerly, NarrationSettings())
 
     private var document: BookDocument? = null
-    private var translateJob: Job? = null
+    private val loadJobs = HashMap<Int, Job>()
+    private val translateJobs = HashMap<Int, Job>()
     private var saveJob: Job? = null
-    /** Hay una sección cargándose: la lista aún muestra la anterior (o nada). */
+    /** Hay una sección cargándose tras un salto: la lista aún muestra la anterior (o nada). */
     @Volatile private var sectionLoading = false
     private var pdfRenderer: PdfPageRenderer? = null
     private val pdfMutex = Mutex()
@@ -89,6 +109,7 @@ class ReaderViewModel(private val container: AppContainer, private val bookId: L
             launch {
                 runCatching { doc.tableOfContents() }
                 _ui.update { it.copy(sectionTitle = doc.sectionTitle(it.section)) }
+                _sections.update { map -> map.mapValues { (s, c) -> c.copy(title = doc.sectionTitle(s)) } }
             }
         }
         viewModelScope.launch {
@@ -97,12 +118,14 @@ class ReaderViewModel(private val container: AppContainer, private val bookId: L
                 val changed = previous != null &&
                     (previous!!.translationMode != s.translationMode || previous!!.targetLanguage != s.targetLanguage)
                 previous = s
-                if (changed) startTranslations()
+                if (changed) restartTranslations()
             }
         }
     }
 
     val sourceLanguage: String get() = _ui.value.book?.language ?: "en"
+
+    private val translates: Boolean get() = narrationSettings.value.translates(sourceLanguage)
 
     /**
      * Índice para el diálogo: los capítulos del propio libro (marcadores del PDF o índice del
@@ -116,31 +139,55 @@ class ReaderViewModel(private val container: AppContainer, private val bookId: L
         return List(doc.sectionCount) { TocEntry(doc.sectionTitle(it) ?: "Sección ${it + 1}", it) }
     }
 
+    // ---------------- Carga de secciones ----------------
+
+    /** Pide (sin esperar) el contenido de una sección: la UI lo recibe por [sections]. */
+    fun requestSection(section: Int, priorityParagraph: Int = 0) {
+        val doc = document ?: return
+        if (section !in 0 until doc.sectionCount) return
+        if (_sections.value.containsKey(section)) {
+            ensureTranslations(section, priorityParagraph)
+            return
+        }
+        if (loadJobs[section]?.isActive == true) return
+        loadJobs[section] = viewModelScope.launch {
+            val paragraphs = doc.paragraphs(section)
+            _sections.update { it + (section to SectionContent(section, doc.sectionTitle(section), paragraphs)) }
+            ensureTranslations(section, priorityParagraph)
+            evictFarSections()
+        }
+    }
+
+    private suspend fun awaitSection(section: Int): SectionContent? {
+        requestSection(section)
+        return _sections.mapNotNull { it[section] }.first()
+    }
+
+    /** Salto explícito a una sección (índice, narración, botones). */
     fun loadSection(section: Int, scrollTo: Int = 0) {
         val doc = document ?: return
         if (section !in 0 until doc.sectionCount) return
         sectionLoading = true
         saveJob?.cancel()
         viewModelScope.launch {
-            val paragraphs = try {
-                doc.paragraphs(section)
+            val content = try {
+                awaitSection(section)
             } finally {
                 sectionLoading = false
-            }
+            } ?: return@launch
             _ui.update {
                 it.copy(
                     loading = false,
                     section = section,
-                    sectionTitle = doc.sectionTitle(section),
-                    paragraphs = paragraphs,
-                    translations = emptyMap(),
-                    translatedTitle = null,
+                    sectionTitle = content.title,
+                    paragraphs = content.paragraphs,
                     translationError = null,
-                    scrollToParagraph = scrollTo.coerceIn(0, (paragraphs.size - 1).coerceAtLeast(0)),
+                    scrollToParagraph = scrollTo.coerceIn(0, (content.paragraphs.size - 1).coerceAtLeast(0)),
                     scrollRequest = it.scrollRequest + 1,
                 )
             }
-            startTranslations()
+            ensureTranslations(section, scrollTo)
+            prefetchNeighbours(section)
             saveProgress(ReadingPosition(section, scrollTo, 0))
         }
     }
@@ -148,49 +195,96 @@ class ReaderViewModel(private val container: AppContainer, private val bookId: L
     fun nextSection() = loadSection(_ui.value.section + 1)
     fun previousSection() = loadSection(_ui.value.section - 1)
 
-    /** Traduce la sección visible, empezando por los párrafos cacheados y siguiendo en orden. */
-    private fun startTranslations() {
-        translateJob?.cancel()
-        val s = narrationSettings.value
-        val ui = _ui.value
-        if (!s.translates(sourceLanguage) || ui.paragraphs.isEmpty()) {
-            _ui.update { it.copy(translations = emptyMap(), translatedTitle = null, translating = false, translationError = null) }
-            return
+    /**
+     * El usuario llegó a otra sección deslizando o desplazándose (sin salto): actualizar la
+     * sección actual, el título y el progreso, sin mover la vista.
+     */
+    fun onSectionVisible(section: Int, paragraph: Int, narrationOwnsProgress: Boolean) {
+        val doc = document ?: return
+        if (section !in 0 until doc.sectionCount) return
+        if (section != _ui.value.section) {
+            val content = _sections.value[section]
+            _ui.update {
+                it.copy(
+                    section = section,
+                    sectionTitle = content?.title ?: doc.sectionTitle(section),
+                    paragraphs = content?.paragraphs ?: emptyList(),
+                )
+            }
+            requestSection(section, paragraph)
+            prefetchNeighbours(section)
         }
-        translateJob = viewModelScope.launch {
-            val section = ui.section
-            val target = s.targetLanguage
-            // Título de la sección (índice -1 en la caché para no chocar con los párrafos).
-            ui.sectionTitle?.let { title ->
+        onParagraphVisible(paragraph, narrationOwnsProgress)
+    }
+
+    private fun prefetchNeighbours(section: Int) {
+        requestSection(section + 1)
+        requestSection(section - 1)
+    }
+
+    /** Mantiene en memoria solo las secciones cercanas a la actual. */
+    private fun evictFarSections() {
+        val current = _ui.value.section
+        val keep = _sections.value.keys.sortedBy { kotlin.math.abs(it - current) }.take(MAX_SECTIONS).toSet()
+        if (keep.size == _sections.value.size) return
+        (_sections.value.keys - keep).forEach { s -> translateJobs.remove(s)?.cancel() }
+        _sections.update { it.filterKeys { s -> s in keep } }
+    }
+
+    // ---------------- Traducción ----------------
+
+    private fun restartTranslations() {
+        translateJobs.values.forEach { it.cancel() }
+        translateJobs.clear()
+        _sections.update { map -> map.mapValues { (_, c) -> c.copy(translations = emptyMap(), translatedTitle = null) } }
+        _ui.update { it.copy(translating = false, translationError = null) }
+        val current = _ui.value.section
+        listOf(current, current + 1, current - 1).forEach { ensureTranslations(it, if (it == current) _ui.value.scrollToParagraph else 0) }
+    }
+
+    /** Traduce una sección: primero lo cacheado, luego desde [priorityParagraph] en adelante. */
+    private fun ensureTranslations(section: Int, priorityParagraph: Int = 0) {
+        if (!translates) return
+        val content = _sections.value[section] ?: return
+        if (translateJobs[section]?.isActive == true) return
+        if (content.paragraphs.isNotEmpty() && content.translations.size >= content.paragraphs.size && content.translatedTitle != null) return
+        val target = narrationSettings.value.targetLanguage
+        val source = sourceLanguage
+        translateJobs[section] = viewModelScope.launch {
+            fun publish(transform: (SectionContent) -> SectionContent) {
+                _sections.update { map -> map[section]?.let { map + (section to transform(it)) } ?: map }
+            }
+            content.title?.let { title ->
                 val translatedTitle = runCatching {
-                    container.translator.translate(bookId, section, TITLE_INDEX, title, sourceLanguage, target)
+                    container.translator.translate(bookId, section, TITLE_INDEX, title, source, target)
                 }.getOrNull()
-                _ui.update { if (it.section == section) it.copy(translatedTitle = translatedTitle) else it }
+                publish { it.copy(translatedTitle = translatedTitle) }
             }
             val result = HashMap<Int, String>()
-            for ((i, p) in ui.paragraphs.withIndex()) {
-                container.translator.cached(bookId, section, i, p, sourceLanguage, target)?.let { result[i] = it }
+            for ((i, p) in content.paragraphs.withIndex()) {
+                container.translator.cached(bookId, section, i, p, source, target)?.let { result[i] = it }
             }
-            _ui.update { it.copy(translations = result.toMap(), translating = result.size < ui.paragraphs.size, translationError = null) }
-            // Empezar por el párrafo visible para que lo que se lee aparezca antes.
-            val start = ui.scrollToParagraph
-            val order = (start until ui.paragraphs.size) + (0 until start)
+            publish { it.copy(translations = result.toMap()) }
+            if (section == _ui.value.section) {
+                _ui.update { it.copy(translating = result.size < content.paragraphs.size, translationError = null) }
+            }
+            val start = priorityParagraph.coerceIn(0, content.paragraphs.size)
+            val order = (start until content.paragraphs.size) + (0 until start)
             for (i in order) {
                 if (result.containsKey(i)) continue
                 try {
-                    val t = container.translator.translate(bookId, section, i, ui.paragraphs[i], sourceLanguage, target)
-                    result[i] = t
-                    _ui.update { if (it.section == section) it.copy(translations = result.toMap()) else it }
+                    result[i] = container.translator.translate(bookId, section, i, content.paragraphs[i], source, target)
+                    publish { it.copy(translations = result.toMap()) }
                 } catch (e: ModelNotDownloadedException) {
                     val lang = Locale.forLanguageTag(e.language).getDisplayLanguage(Locale.forLanguageTag("es"))
                     _ui.update { it.copy(translating = false, translationError = "Falta descargar el modelo de traducción: $lang") }
                     return@launch
                 } catch (e: Exception) {
-                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    if (e is CancellationException) throw e
                     _ui.update { it.copy(translationError = "Error de traducción: ${e.message}") }
                 }
             }
-            _ui.update { it.copy(translating = false) }
+            if (section == _ui.value.section) _ui.update { it.copy(translating = false) }
         }
     }
 
@@ -210,9 +304,11 @@ class ReaderViewModel(private val container: AppContainer, private val bookId: L
                 return@launch
             }
             _ui.update { it.copy(translationError = null) }
-            startTranslations()
+            restartTranslations()
         }
     }
+
+    // ---------------- Progreso ----------------
 
     /** El usuario está viendo este párrafo (lectura manual): guardar progreso con un pequeño retraso. */
     fun onParagraphVisible(paragraph: Int, narrationOwnsProgress: Boolean) {
@@ -234,9 +330,12 @@ class ReaderViewModel(private val container: AppContainer, private val bookId: L
         }
     }
 
+    // ---------------- Apariencia ----------------
+
     fun setFontScale(value: Float) = viewModelScope.launch { container.settings.setFontScale(value.coerceIn(0.7f, 2.2f)) }
     fun setTheme(theme: ReaderTheme) = viewModelScope.launch { container.settings.setTheme(theme) }
     fun setLineHeight(value: Float) = viewModelScope.launch { container.settings.setLineHeight(value) }
+    fun setPageMode(mode: PageMode) = viewModelScope.launch { container.settings.setPageMode(mode) }
 
     // ---- Vista original de PDF ----
 
@@ -253,6 +352,8 @@ class ReaderViewModel(private val container: AppContainer, private val bookId: L
 
     private companion object {
         const val TITLE_INDEX = -1
+        /** Secciones en memoria a la vez (scroll continuo/deslizar). */
+        const val MAX_SECTIONS = 12
     }
 
     override fun onCleared() {

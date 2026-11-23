@@ -48,6 +48,26 @@ class TextExtractionTest {
     }
 
     @Test
+    fun repairsUtf16ReadAsLatin1() {
+        // "𝐇𝐨𝐥𝐚" (letras matemáticas en negrita) mal decodificado: cada carácter → 4 Latin-1.
+        val fancy = "Dijo 𝐇𝐨𝐥𝐚 y se fue."
+        val broken = fancy.flatMap { c -> listOf((c.code shr 8).toChar(), (c.code and 0xFF).toChar()) }
+            .let { chars ->
+                // Solo los pares sustitutos se rompen así; el resto del texto queda intacto.
+                val out = StringBuilder()
+                var i = 0
+                for (c in fancy) {
+                    if (Character.isSurrogate(c)) out.append(chars[i]).append(chars[i + 1]) else out.append(c)
+                    i += 2
+                }
+                out.toString()
+            }
+        assertEquals("Dijo Hola y se fue.", TextCleaner.normalize(broken))
+        // Texto normal con Ø/Ü no se toca.
+        assertEquals("Øresund Über", TextCleaner.normalize("Øresund Über"))
+    }
+
+    @Test
     fun detectsUnterminatedParagraphs() {
         assertTrue(TextCleaner.endsSentence("The end."))
         assertTrue(TextCleaner.endsSentence("«¿Vienes?»"))

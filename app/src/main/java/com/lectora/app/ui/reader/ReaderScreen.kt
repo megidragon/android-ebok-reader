@@ -74,7 +74,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import com.lectora.app.data.PageMode
 import com.lectora.app.data.ReaderTheme
+import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerState
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.rememberUpdatedState
 import com.lectora.app.playback.PlayerActions
 import com.lectora.app.ui.player.ReaderPlayerBar
 import com.lectora.app.ui.theme.PageColors
@@ -101,12 +109,14 @@ fun ReaderScreen(
     onOpenTranslationSettings: () -> Unit,
 ) {
     val ui by vm.ui.collectAsState()
+    val sections by vm.sections.collectAsState()
     val readerSettings by vm.readerSettings.collectAsState()
     val narrationSettings by vm.narrationSettings.collectAsState()
     val narration by player.state.collectAsState()
     val isThisBook = narration.bookId == bookId
     val current: Utterance? = if (isThisBook) narration.current else null
     val colors = pageColors(readerSettings.theme)
+    val pageMode = readerSettings.pageMode
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     var follow by rememberSaveable { mutableStateOf(true) }
@@ -114,38 +124,64 @@ fun ReaderScreen(
     var showOriginalPdf by rememberSaveable { mutableStateOf(false) }
     val mode = narrationSettings.translationMode
     val translating = narrationSettings.translates(vm.sourceLanguage)
-    // En modo Traducido el título original tampoco se muestra.
-    val shownTitle = when {
-        translating && mode == TranslationMode.TRANSLATED -> ui.translatedTitle
-        translating && mode == TranslationMode.BILINGUAL && ui.translatedTitle != null ->
-            "${ui.sectionTitle} · ${ui.translatedTitle}"
-        else -> ui.sectionTitle
+    val effectiveMode = if (translating) mode else TranslationMode.ORIGINAL
+    val currentContent = sections[ui.section]
+    val shownTitle = displayTitle(ui.sectionTitle, currentContent?.translatedTitle, effectiveMode)
+
+    // Estado de desplazamiento propio de cada modo.
+    val pageListStates = remember { mutableMapOf<Int, LazyListState>() }
+    fun pageState(section: Int) = pageListStates.getOrPut(section) { LazyListState() }
+    val continuous = remember { ContinuousState(ui.section) }
+    val narrationOwnsProgress by rememberUpdatedState(isThisBook && narration.isActive)
+    val onNarrateFrom: (Int, Int) -> Unit = { section, paragraph ->
+        follow = true
+        player.playBook(bookId, ReadingPosition(section, paragraph, 0))
+    }
+    val ctx = ParagraphContext(current, effectiveMode, colors, readerSettings.fontScale, readerSettings.lineHeight, onNarrateFrom)
+
+    /** Párrafo visible en el modo actual (para "play" desde lo que se ve). */
+    fun visibleParagraph(): Int = when (pageMode) {
+        PageMode.BUTTONS -> (listState.firstVisibleItemIndex - 1).coerceAtLeast(0)
+        PageMode.SWIPE -> (pageState(ui.section).firstVisibleItemIndex - 1).coerceAtLeast(0)
+        PageMode.CONTINUOUS -> continuous.firstVisible()?.second ?: 0
     }
 
-    // Desplazamiento pedido por el ViewModel (cambio de sección o posición guardada).
-    LaunchedEffect(ui.scrollRequest) {
-        if (ui.paragraphs.isNotEmpty()) listState.scrollToItem(ui.scrollToParagraph + 1)
-    }
-
-    // Seguir la narración: cambiar de sección y desplazar al párrafo que suena.
-    LaunchedEffect(current?.position?.section, current?.position?.paragraph, follow) {
-        val pos = current?.position ?: return@LaunchedEffect
-        if (!follow) return@LaunchedEffect
-        if (pos.section != ui.section) {
-            vm.loadSection(pos.section, pos.paragraph)
-        } else {
-            val target = pos.paragraph + 1
-            val visible = listState.layoutInfo.visibleItemsInfo
-            val onScreen = visible.any { it.index == target } && visible.lastOrNull()?.index != target
-            if (!onScreen) listState.animateScrollToItem(target, scrollOffset = -120)
+    // Saltos pedidos por el ViewModel (índice, posición guardada, cambio de capítulo).
+    LaunchedEffect(ui.scrollRequest, pageMode) {
+        if (ui.loading) return@LaunchedEffect
+        val target = ui.scrollToParagraph + 1
+        when (pageMode) {
+            PageMode.BUTTONS -> if (ui.paragraphs.isNotEmpty()) listState.scrollToItem(target)
+            PageMode.SWIPE -> {
+                continuous.pager?.let { pager -> if (pager.currentPage != ui.section) pager.scrollToPage(ui.section) }
+                pageState(ui.section).scrollToItem(target)
+            }
+            PageMode.CONTINUOUS -> continuous.jumpTo(ui.section, ui.scrollToParagraph)
         }
     }
 
-    // Progreso de lectura manual (si se está narrando este libro, la narración lo guarda).
-    val narrationOwnsProgress by androidx.compose.runtime.rememberUpdatedState(isThisBook && narration.isActive)
-    LaunchedEffect(listState, ui.section) {
-        snapshotFlow { listState.firstVisibleItemIndex }.distinctUntilChanged().collect { index ->
-            vm.onParagraphVisible((index - 1).coerceAtLeast(0), narrationOwnsProgress)
+    // Seguir la narración: llevar la vista a la sección y al párrafo que suenan.
+    LaunchedEffect(current?.position?.section, current?.position?.paragraph, follow, pageMode) {
+        val pos = current?.position ?: return@LaunchedEffect
+        if (!follow) return@LaunchedEffect
+        when (pageMode) {
+            PageMode.BUTTONS -> if (pos.section != ui.section) {
+                vm.loadSection(pos.section, pos.paragraph)
+            } else {
+                listState.revealItem(pos.paragraph + 1)
+            }
+            PageMode.SWIPE -> {
+                val pager = continuous.pager
+                if (pager != null && pager.currentPage != pos.section) {
+                    if (kotlin.math.abs(pager.currentPage - pos.section) == 1) pager.animateScrollToPage(pos.section)
+                    else pager.scrollToPage(pos.section)
+                }
+                pageState(pos.section).revealItem(pos.paragraph + 1)
+            }
+            PageMode.CONTINUOUS -> {
+                val index = continuous.indexOf(pos.section, pos.paragraph)
+                if (index != null) continuous.list.revealItem(index) else vm.loadSection(pos.section, pos.paragraph)
+            }
         }
     }
 
@@ -180,7 +216,7 @@ fun ReaderScreen(
                         }
                     }
                     IconButton(onClick = { showToc = true }) { Icon(Icons.AutoMirrored.Filled.List, "Índice") }
-                    AppearanceMenu(readerSettings.fontScale, readerSettings.theme, vm)
+                    AppearanceMenu(readerSettings.fontScale, readerSettings.theme, readerSettings.pageMode, vm)
                 },
             )
         },
@@ -190,7 +226,7 @@ fun ReaderScreen(
                 isThisBook = isThisBook,
                 speechRate = narrationSettings.speechRate,
                 onToggle = {
-                    val visibleParagraph = (listState.firstVisibleItemIndex - 1).coerceAtLeast(0)
+                    val visibleParagraph = visibleParagraph()
                     when {
                         // Sonando: pausar.
                         isThisBook && narration.isActive -> player.toggle()
@@ -231,63 +267,82 @@ fun ReaderScreen(
                 ui.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                 ui.error != null -> Text(ui.error!!, color = colors.text, modifier = Modifier.align(Alignment.Center).padding(24.dp))
                 ui.isPdf && showOriginalPdf -> PdfPageView(vm, ui.section, colors, onPrev = vm::previousSection, onNext = vm::nextSection)
-                else -> LazyColumn(
-                    state = listState,
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    item(key = "header") {
-                        Column {
-                            // Muchos EPUB repiten el título como primer párrafo: no duplicarlo.
-                            shownTitle?.takeIf { ui.paragraphs.firstOrNull()?.trim() != ui.sectionTitle?.trim() }?.let {
-                                Text(
-                                    it,
-                                    color = colors.secondaryText,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontFamily = FontFamily.Serif,
-                                    modifier = Modifier.padding(vertical = 12.dp),
-                                )
+                pageMode == PageMode.BUTTONS -> {
+                    // Una sección por pantalla, con botones.
+                    val content = currentContent ?: SectionContent(ui.section, ui.sectionTitle, ui.paragraphs)
+                    SectionList(
+                        content = content,
+                        state = listState,
+                        ctx = ctx,
+                        onUserDrag = { follow = false },
+                        onFirstVisible = { p -> vm.onParagraphVisible(p, narrationOwnsProgress) },
+                        footer = {
+                            Row(
+                                Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                if (ui.section > 0) OutlinedButton(onClick = vm::previousSection) { Text("Anterior") } else Spacer(Modifier)
+                                if (ui.section < ui.sectionCount - 1) Button(onClick = vm::nextSection) { Text("Siguiente") }
                             }
-                            if (ui.paragraphs.isEmpty()) {
-                                Text("(Esta sección no contiene texto.)", color = colors.secondaryText, modifier = Modifier.padding(vertical = 24.dp))
+                        },
+                    )
+                }
+                pageMode == PageMode.SWIPE -> {
+                    // Deslizar: derecha→izquierda = siguiente, izquierda→derecha = anterior.
+                    val pagerState = rememberPagerState(initialPage = ui.section) { ui.sectionCount }
+                    continuous.pager = pagerState
+                    LaunchedEffect(pagerState) {
+                        snapshotFlow { pagerState.settledPage }.distinctUntilChanged().collect { page ->
+                            if (page != ui.section) {
+                                vm.onSectionVisible(page, (pageState(page).firstVisibleItemIndex - 1).coerceAtLeast(0), narrationOwnsProgress)
                             }
                         }
                     }
-                    itemsIndexed(ui.paragraphs, key = { i, _ -> "p$i" }) { index, original ->
-                        val highlight = current?.takeIf { it.position.section == ui.section && it.position.paragraph == index }
-                        ParagraphItem(
-                            original = original,
-                            translation = ui.translations[index],
-                            mode = if (translating) mode else TranslationMode.ORIGINAL,
-                            highlight = highlight,
-                            colors = colors,
-                            fontScale = readerSettings.fontScale,
-                            lineHeight = readerSettings.lineHeight,
-                            onNarrateFromHere = {
-                                follow = true
-                                player.playBook(bookId, ReadingPosition(ui.section, index, 0))
-                            },
-                        )
+                    LaunchedEffect(pagerState) {
+                        pagerState.interactionSource.interactions.collect { if (it is DragInteraction.Start) follow = false }
                     }
-                    item(key = "footer") {
-                        Row(
-                            Modifier.fillMaxWidth().padding(vertical = 32.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            if (ui.section > 0) OutlinedButton(onClick = vm::previousSection) { Text("Anterior") } else Spacer(Modifier)
-                            if (ui.section < ui.sectionCount - 1) Button(onClick = vm::nextSection) { Text("Siguiente") }
+                    HorizontalPager(
+                        state = pagerState,
+                        beyondViewportPageCount = 1,
+                        key = { it },
+                        modifier = Modifier.fillMaxSize(),
+                    ) { page ->
+                        LaunchedEffect(page) { vm.requestSection(page) }
+                        val content = sections[page]
+                        if (content == null) {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                        } else {
+                            SectionList(
+                                content = content,
+                                state = pageState(page),
+                                ctx = ctx,
+                                onUserDrag = { follow = false },
+                                onFirstVisible = { p -> if (page == ui.section) vm.onParagraphVisible(p, narrationOwnsProgress) },
+                                footer = {
+                                    Text(
+                                        if (page < ui.sectionCount - 1) "Desliza ← para la página siguiente" else "Fin del libro",
+                                        color = colors.secondaryText,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 28.dp),
+                                    )
+                                },
+                            )
                         }
                     }
                 }
+                else -> ContinuousReader(
+                    state = continuous,
+                    sections = sections,
+                    sectionCount = ui.sectionCount,
+                    currentSection = ui.section,
+                    ctx = ctx,
+                    requestSection = vm::requestSection,
+                    onUserDrag = { follow = false },
+                    onVisible = { s, p -> vm.onSectionVisible(s, p, narrationOwnsProgress) },
+                )
             }
         }
-        }
-    }
-
-    // Arrastre manual durante la narración => desactivar "seguir".
-    LaunchedEffect(listState) {
-        listState.interactionSource.interactions.collect { interaction ->
-            if (interaction is androidx.compose.foundation.interaction.DragInteraction.Start) follow = false
         }
     }
 
@@ -368,6 +423,253 @@ fun ReaderScreen(
         )
     }
 }
+
+/** Título a mostrar según el modo de traducción (en "Traducido" nunca el original). */
+private fun displayTitle(original: String?, translated: String?, mode: TranslationMode): String? = when (mode) {
+    TranslationMode.TRANSLATED -> translated
+    TranslationMode.BILINGUAL -> if (translated != null && original != null) "$original · $translated" else original
+    TranslationMode.ORIGINAL -> original
+}
+
+/** Lo que necesita cada párrafo para pintarse (común a los tres modos). */
+private class ParagraphContext(
+    val current: Utterance?,
+    val mode: TranslationMode,
+    val colors: PageColors,
+    val fontScale: Float,
+    val lineHeight: Float,
+    val onNarrateFrom: (section: Int, paragraph: Int) -> Unit,
+)
+
+/** Desplaza hasta [index] solo si no está ya cómodamente a la vista. */
+private suspend fun LazyListState.revealItem(index: Int) {
+    val visible = layoutInfo.visibleItemsInfo
+    val onScreen = visible.any { it.index == index } && visible.lastOrNull()?.index != index
+    if (!onScreen) animateScrollToItem(index, scrollOffset = -120)
+}
+
+@Composable
+private fun SectionHeader(content: SectionContent, ctx: ParagraphContext) {
+    val title = displayTitle(content.title, content.translatedTitle, ctx.mode)
+    Column {
+        // Muchos EPUB repiten el título como primer párrafo: no duplicarlo.
+        title?.takeIf { content.paragraphs.firstOrNull()?.trim() != content.title?.trim() }?.let {
+            Text(
+                it,
+                color = ctx.colors.secondaryText,
+                style = MaterialTheme.typography.titleMedium,
+                fontFamily = FontFamily.Serif,
+                modifier = Modifier.padding(vertical = 12.dp),
+            )
+        }
+        if (content.paragraphs.isEmpty()) {
+            Text("(Esta sección no contiene texto.)", color = ctx.colors.secondaryText, modifier = Modifier.padding(vertical = 24.dp))
+        }
+    }
+}
+
+@Composable
+private fun SectionParagraph(content: SectionContent, index: Int, ctx: ParagraphContext) {
+    val highlight = ctx.current?.takeIf { it.position.section == content.section && it.position.paragraph == index }
+    ParagraphItem(
+        original = content.paragraphs[index],
+        translation = content.translations[index],
+        mode = ctx.mode,
+        highlight = highlight,
+        colors = ctx.colors,
+        fontScale = ctx.fontScale,
+        lineHeight = ctx.lineHeight,
+        onNarrateFromHere = { ctx.onNarrateFrom(content.section, index) },
+    )
+}
+
+/** Una sección en lista vertical (modos "botones" y "deslizar"). Ítem 0 = cabecera. */
+@Composable
+private fun SectionList(
+    content: SectionContent,
+    state: LazyListState,
+    ctx: ParagraphContext,
+    onUserDrag: () -> Unit,
+    onFirstVisible: (paragraph: Int) -> Unit,
+    footer: @Composable () -> Unit,
+) {
+    LaunchedEffect(state, content.section) {
+        snapshotFlow { state.firstVisibleItemIndex }.distinctUntilChanged().collect { index ->
+            onFirstVisible((index - 1).coerceAtLeast(0))
+        }
+    }
+    LaunchedEffect(state) {
+        state.interactionSource.interactions.collect { if (it is DragInteraction.Start) onUserDrag() }
+    }
+    LazyColumn(
+        state = state,
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        item(key = "header") { SectionHeader(content, ctx) }
+        items(content.paragraphs.size, key = { "p$it" }) { index -> SectionParagraph(content, index, ctx) }
+        item(key = "footer") { footer() }
+    }
+}
+
+/**
+ * Estado del scroll continuo: una "ventana" de secciones consecutivas que crece al acercarse a
+ * los bordes y se recorta lejos de la vista (memoria acotada aunque el libro tenga miles de
+ * páginas). Las claves estables de cada ítem mantienen la posición al añadir secciones arriba.
+ */
+@Stable
+private class ContinuousState(initialSection: Int) {
+    val list = LazyListState()
+    var window by mutableStateOf(initialSection..initialSection)
+    /** Pager del modo deslizar (se comparte aquí para que los efectos lo encuentren). */
+    var pager: PagerState? = null
+    /** Claves de los ítems tal como están compuestos ahora. */
+    var keys: List<String> = emptyList()
+    private var pendingJump: Pair<Int, Int>? = null
+
+    fun indexOf(section: Int, paragraph: Int): Int? = keys.indexOf("p$section:$paragraph").takeIf { it >= 0 }
+
+    fun firstVisible(): Pair<Int, Int>? {
+        val key = list.layoutInfo.visibleItemsInfo.firstOrNull()?.key as? String ?: return null
+        return parseKey(key)
+    }
+
+    suspend fun jumpTo(section: Int, paragraph: Int) {
+        indexOf(section, paragraph)?.let {
+            list.scrollToItem(it)
+            return
+        }
+        pendingJump = section to paragraph
+        window = section..section
+    }
+
+    /** Tras recomponer con la ventana nueva, completa el salto pendiente si ya hay contenido. */
+    suspend fun completePendingJump() {
+        val (s, p) = pendingJump ?: return
+        val index = indexOf(s, p) ?: return
+        pendingJump = null
+        list.scrollToItem(index)
+    }
+
+    companion object {
+        /** "p12:3" -> (12, 3); "h12" / "l12" -> (12, 0). */
+        fun parseKey(key: String): Pair<Int, Int>? = when (key.firstOrNull()) {
+            'p' -> key.drop(1).split(':').let { (s, p) -> s.toInt() to p.toInt() }
+            'h', 'l' -> key.drop(1).toIntOrNull()?.let { it to 0 }
+            else -> null
+        }
+    }
+}
+
+@Composable
+private fun ContinuousReader(
+    state: ContinuousState,
+    sections: Map<Int, SectionContent>,
+    sectionCount: Int,
+    currentSection: Int,
+    ctx: ParagraphContext,
+    requestSection: (Int) -> Unit,
+    onUserDrag: () -> Unit,
+    onVisible: (section: Int, paragraph: Int) -> Unit,
+) {
+    val window = state.window
+    LaunchedEffect(window) { window.forEach(requestSection) }
+
+    // Ítems de la ventana: cabecera + párrafos de cada sección (o un "cargando").
+    // paragraph: -1 = cabecera, -2 = cargando.
+    val items = remember(window, sections) {
+        buildList {
+            for (s in window) {
+                val content = sections[s]
+                if (content == null) {
+                    add(ContinuousItem("l$s", s, -2))
+                } else {
+                    add(ContinuousItem("h$s", s, -1))
+                    for (i in content.paragraphs.indices) add(ContinuousItem("p$s:$i", s, i))
+                }
+            }
+        }
+    }
+    state.keys = items.map { it.key }
+    LaunchedEffect(items) { state.completePendingJump() }
+
+    // Ampliar la ventana al acercarse a un borde y recortarla lejos de la vista.
+    // (Se lee el mapa de secciones como estado vivo: al terminar de cargar una, se reevalúa.)
+    val liveSections by rememberUpdatedState(sections)
+    LaunchedEffect(state, sectionCount) {
+        snapshotFlow {
+            val info = state.list.layoutInfo
+            val w = state.window
+            EdgeCheck(
+                first = info.visibleItemsInfo.firstOrNull()?.index ?: 0,
+                last = info.visibleItemsInfo.lastOrNull()?.index ?: 0,
+                total = info.totalItemsCount,
+                window = w,
+                firstLoaded = liveSections[w.first] != null,
+                lastLoaded = liveSections[w.last] != null,
+            )
+        }.distinctUntilChanged().collect { c ->
+            val w = c.window
+            var next = w
+            if (c.total > 0 && c.last >= c.total - 4 && w.last < sectionCount - 1 && c.lastLoaded) next = next.first..(next.last + 1)
+            if (c.first <= 2 && w.first > 0 && c.firstLoaded) next = (next.first - 1)..next.last
+            if (next.last - next.first + 1 > MAX_WINDOW) {
+                val visibleSection = state.firstVisible()?.first ?: currentSection
+                next = if (visibleSection - next.first > next.last - visibleSection) (next.first + 1)..next.last else next.first..(next.last - 1)
+            }
+            if (next != w) state.window = next
+        }
+    }
+    // Sección/párrafo visibles -> título, progreso y precarga.
+    LaunchedEffect(state) {
+        snapshotFlow { state.firstVisible() }.distinctUntilChanged().collect { pos ->
+            if (pos != null) onVisible(pos.first, pos.second)
+        }
+    }
+    LaunchedEffect(state) {
+        state.list.interactionSource.interactions.collect { if (it is DragInteraction.Start) onUserDrag() }
+    }
+
+    LazyColumn(
+        state = state.list,
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        items(items.size, key = { items[it].key }) { index ->
+            val item = items[index]
+            val content = sections[item.section]
+            when {
+                content == null || item.paragraph == -2 ->
+                    Box(Modifier.fillMaxWidth().height(160.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                item.paragraph == -1 -> SectionHeader(content, ctx)
+                item.paragraph < content.paragraphs.size -> SectionParagraph(content, item.paragraph, ctx)
+            }
+        }
+        if (window.last >= sectionCount - 1) {
+            item(key = "end") {
+                Text(
+                    "Fin del libro",
+                    color = ctx.colors.secondaryText,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                )
+            }
+        }
+    }
+}
+
+private const val MAX_WINDOW = 6
+
+private data class ContinuousItem(val key: String, val section: Int, val paragraph: Int)
+
+private data class EdgeCheck(
+    val first: Int,
+    val last: Int,
+    val total: Int,
+    val window: IntRange,
+    val firstLoaded: Boolean,
+    val lastLoaded: Boolean,
+)
 
 @Composable
 private fun ParagraphItem(
@@ -461,7 +763,7 @@ private fun TranslationMenu(mode: TranslationMode, onSelect: (TranslationMode) -
 }
 
 @Composable
-private fun AppearanceMenu(fontScale: Float, theme: ReaderTheme, vm: ReaderViewModel) {
+private fun AppearanceMenu(fontScale: Float, theme: ReaderTheme, pageMode: PageMode, vm: ReaderViewModel) {
     var open by remember { mutableStateOf(false) }
     Box {
         IconButton(onClick = { open = true }) { Icon(Icons.Default.TextFields, "Apariencia") }
@@ -482,6 +784,24 @@ private fun AppearanceMenu(fontScale: Float, theme: ReaderTheme, vm: ReaderViewM
                     text = { Text(label) },
                     trailingIcon = { if (t == theme) Icon(Icons.Default.Check, null) },
                     onClick = { vm.setTheme(t) },
+                )
+            }
+            HorizontalDivider()
+            Text(
+                "Pasar página",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 12.dp, top = 8.dp, bottom = 4.dp),
+            )
+            listOf(
+                PageMode.BUTTONS to "Con botones",
+                PageMode.SWIPE to "Deslizando (con animación)",
+                PageMode.CONTINUOUS to "Scroll continuo",
+            ).forEach { (m, label) ->
+                DropdownMenuItem(
+                    text = { Text(label) },
+                    trailingIcon = { if (m == pageMode) Icon(Icons.Default.Check, null) },
+                    onClick = { vm.setPageMode(m); open = false },
                 )
             }
         }

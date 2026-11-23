@@ -16,10 +16,23 @@ import kotlinx.coroutines.flow.map
 
 enum class ReaderTheme { SYSTEM, LIGHT, SEPIA, DARK }
 
+/** Cómo se pasa de una página/capítulo a la siguiente. */
+enum class PageMode {
+    /** Una sección por pantalla, con botones Anterior/Siguiente. */
+    BUTTONS,
+
+    /** Deslizar horizontalmente entre secciones, con animación. */
+    SWIPE,
+
+    /** Desplazamiento vertical infinito: las secciones van una detrás de otra. */
+    CONTINUOUS,
+}
+
 data class ReaderSettings(
     val fontScale: Float = 1f,
     val theme: ReaderTheme = ReaderTheme.SYSTEM,
     val lineHeight: Float = 1.5f,
+    val pageMode: PageMode = PageMode.BUTTONS,
 )
 
 private val Context.dataStore by preferencesDataStore("settings")
@@ -40,6 +53,7 @@ class SettingsRepository(context: Context) {
         val theme = stringPreferencesKey("reader_theme")
         val lineHeight = floatPreferencesKey("line_height")
         val wifiOnly = booleanPreferencesKey("wifi_only")
+        val pageMode = stringPreferencesKey("page_mode")
     }
 
     val narration: Flow<NarrationSettings> = store.data.map { p -> p.toNarration() }.distinctUntilChanged()
@@ -49,6 +63,7 @@ class SettingsRepository(context: Context) {
             fontScale = p[Keys.fontScale] ?: 1f,
             theme = p[Keys.theme]?.let { runCatching { ReaderTheme.valueOf(it) }.getOrNull() } ?: ReaderTheme.SYSTEM,
             lineHeight = p[Keys.lineHeight] ?: 1.5f,
+            pageMode = p[Keys.pageMode]?.let { runCatching { PageMode.valueOf(it) }.getOrNull() } ?: PageMode.BUTTONS,
         )
     }.distinctUntilChanged()
 
@@ -86,4 +101,5 @@ class SettingsRepository(context: Context) {
     suspend fun setTheme(theme: ReaderTheme) = store.edit { it[Keys.theme] = theme.name }
     suspend fun setLineHeight(value: Float) = store.edit { it[Keys.lineHeight] = value }
     suspend fun setWifiOnly(value: Boolean) = store.edit { it[Keys.wifiOnly] = value }
+    suspend fun setPageMode(mode: PageMode) = store.edit { it[Keys.pageMode] = mode.name }
 }

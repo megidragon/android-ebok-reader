@@ -29,6 +29,8 @@ data class CatalogVoice(
     val archive: String,
     val files: Map<String, String>,
     val speakers: List<NeuralSpeaker>,
+    /** Idioma principal (código corto) para filtrar en el catálogo. */
+    val language: String = speakers.firstOrNull()?.lang?.substringBefore('-').orEmpty(),
 ) {
     val url: String get() = "$BASE/$archive"
 
@@ -114,27 +116,65 @@ class NeuralVoiceInstaller(private val voicesDir: File) {
     private val _states = MutableStateFlow<Map<String, InstallState>>(emptyMap())
     val states: StateFlow<Map<String, InstallState>> = _states.asStateFlow()
 
+    /** Modelos instalados (catálogo y añadidos por el usuario). */
+    private val _installed = MutableStateFlow<List<NeuralVoiceModel>>(emptyList())
+    val installed: StateFlow<List<NeuralVoiceModel>> = _installed.asStateFlow()
+
     init {
         refresh()
     }
 
     fun refresh() {
-        _states.value = NeuralVoiceCatalog.voices.associate { v ->
-            v.id to if (File(File(voicesDir, v.id), NeuralVoiceModel.MANIFEST).exists()) InstallState.Installed else InstallState.NotInstalled
+        val models = voicesDir.listFiles()
+            ?.filter { it.isDirectory && !it.name.endsWith(".partial") }
+            ?.mapNotNull { NeuralVoiceModel.fromManifest(it) }
+            .orEmpty()
+        _installed.value = models.sortedBy { it.name.lowercase() }
+        val ids = models.map { it.id }.toSet()
+        _states.update { old ->
+            val busy = old.filterValues { it is InstallState.Downloading || it == InstallState.Extracting }
+            (NeuralVoiceCatalog.voices.map { it.id } + ids).associateWith { id ->
+                busy[id] ?: if (id in ids) InstallState.Installed else InstallState.NotInstalled
+            }
         }
     }
 
     private fun set(id: String, state: InstallState) = _states.update { it + (id to state) }
 
+    /** Descarga e instala una voz del catálogo (fijo u online). */
     suspend fun install(voice: CatalogVoice) = withContext(Dispatchers.IO) {
-        val target = File(voicesDir, voice.id)
-        val tmp = File(voicesDir, "${voice.id}.partial").apply { deleteRecursively(); mkdirs() }
-        try {
-            set(voice.id, InstallState.Downloading(0f))
+        install(voice.id, voice.name, voice) {
             val connection = openFollowingRedirects(voice.url)
             val total = connection.contentLengthLong.takeIf { it > 0 } ?: (voice.sizeMb * 1024L * 1024L)
+            connection.inputStream to total
+        }
+    }
+
+    /**
+     * Instala un paquete de voz que el usuario ya tiene (por ejemplo un .tar.bz2 de sherpa-onnx
+     * descargado a mano). El tipo de modelo, idioma y hablantes se detectan del contenido.
+     */
+    /** Devuelve el id asignado a la voz (su estado final queda en [states]). */
+    suspend fun installFromStream(fileName: String, sizeBytes: Long, open: () -> InputStream): String = withContext(Dispatchers.IO) {
+        val base = fileName.substringBefore(".tar").substringBefore(".tbz").removePrefix("vits-")
+        val id = "custom-" + base.lowercase().replace(Regex("[^a-z0-9_-]+"), "-").trim('-').ifEmpty { "voz" }
+        install(id, prettyName(base), null) { open() to sizeBytes.coerceAtLeast(1) }
+        id
+    }
+
+    private suspend fun install(
+        id: String,
+        name: String,
+        catalog: CatalogVoice?,
+        source: () -> Pair<InputStream, Long>,
+    ) {
+        val target = File(voicesDir, id)
+        val tmp = File(voicesDir, "$id.partial").apply { deleteRecursively(); mkdirs() }
+        try {
+            set(id, InstallState.Downloading(0f))
+            val (stream, total) = source()
             var lastReported = 0f
-            val counting = object : FilterInputStream(connection.inputStream.buffered(256 * 1024)) {
+            val counting = object : FilterInputStream(stream.buffered(256 * 1024)) {
                 var read = 0L
                 override fun read(b: ByteArray, off: Int, len: Int): Int {
                     val n = super.read(b, off, len)
@@ -143,7 +183,7 @@ class NeuralVoiceInstaller(private val voicesDir: File) {
                         val f = (read.toFloat() / total).coerceAtMost(1f)
                         if (f - lastReported >= 0.01f) {
                             lastReported = f
-                            set(voice.id, InstallState.Downloading(f))
+                            set(id, InstallState.Downloading(f))
                         }
                     }
                     return n
@@ -152,29 +192,48 @@ class NeuralVoiceInstaller(private val voicesDir: File) {
             // Se descomprime mientras se descarga: no hace falta espacio para el .tar.bz2.
             counting.use { extractTarBz2(it, tmp) }
             coroutineContext.ensureActive()
-            set(voice.id, InstallState.Extracting)
+            set(id, InstallState.Extracting)
 
             val root = tmp.listFiles()?.singleOrNull { it.isDirectory } ?: tmp
-            val model = NeuralVoiceModel(voice.id, voice.name, voice.family, voice.sampleRate, voice.speakers, voice.files, target)
-            voice.files.forEach { (key, rel) ->
-                if (!File(root, rel).exists()) throw IOException("Falta '$rel' ($key) en el paquete")
+            val model = if (catalog != null && catalog.files.isNotEmpty()) {
+                catalog.files.forEach { (key, rel) ->
+                    if (!File(root, rel).exists()) throw IOException("Falta '$rel' ($key) en el paquete")
+                }
+                NeuralVoiceModel(id, catalog.name, catalog.family, catalog.sampleRate, catalog.speakers, catalog.files, target)
+            } else {
+                VoicePackageInspector.inspect(root, id, catalog?.name ?: name).copy(directory = target)
             }
             File(root, NeuralVoiceModel.MANIFEST).writeText(model.toJson().toString(2))
             target.deleteRecursively()
             if (!root.renameTo(target)) throw IOException("No se pudo mover la voz a ${target.name}")
             tmp.deleteRecursively()
-            set(voice.id, InstallState.Installed)
+            set(id, InstallState.Installed)
+            refresh()
         } catch (e: Exception) {
             tmp.deleteRecursively()
-            Log.e("NeuralVoiceInstaller", "Falló la instalación de ${voice.id}", e)
-            set(voice.id, if (e is kotlinx.coroutines.CancellationException) InstallState.NotInstalled else InstallState.Failed(e.message ?: "Error"))
+            Log.e("NeuralVoiceInstaller", "Falló la instalación de $id", e)
+            set(id, if (e is kotlinx.coroutines.CancellationException) InstallState.NotInstalled else InstallState.Failed(e.message ?: "Error"))
             if (e is kotlinx.coroutines.CancellationException) throw e
         }
     }
 
-    fun uninstall(voice: CatalogVoice) {
-        File(voicesDir, voice.id).deleteRecursively()
-        set(voice.id, InstallState.NotInstalled)
+    fun uninstall(voice: CatalogVoice) = uninstall(voice.id)
+
+    fun uninstall(id: String) {
+        File(voicesDir, id).deleteRecursively()
+        set(id, InstallState.NotInstalled)
+        refresh()
+    }
+
+    /** "piper-es_ES-sharvard-medium-int8" -> "Sharvard (España)"; otros nombres, legibles. */
+    private fun prettyName(base: String): String {
+        Regex("""^(?:piper-)?([a-z]{2,3})_([A-Z]{2})-(.+?)-(x_low|low|medium|high)""").find(base)?.let { m ->
+            val (lang, region, voice) = m.destructured
+            val country = java.util.Locale(lang, region).getDisplayCountry(java.util.Locale.forLanguageTag("es")).ifBlank { region }
+            return "${voice.replace('_', ' ').replaceFirstChar { it.uppercase() }} ($country)"
+        }
+        return base.removePrefix("piper-").split('-', '_').filter { it.isNotBlank() }
+            .joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
     }
 
     private fun openFollowingRedirects(url: String): HttpURLConnection {
