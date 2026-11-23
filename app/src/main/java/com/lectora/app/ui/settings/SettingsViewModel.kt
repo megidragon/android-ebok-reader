@@ -66,6 +66,20 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
         refreshVoices(force = true)
     }
 
+    // ---- Narración pregenerada ----
+    private val _prerenderBytes = MutableStateFlow(0L)
+    val prerenderBytes: StateFlow<Long> = _prerenderBytes.asStateFlow()
+
+    fun refreshPrerenderSize() = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        _prerenderBytes.value = container.prerenderStore.totalBytes()
+    }
+
+    fun deleteAllPrerender() = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        container.prerenderStore.deleteAll()
+        _prerenderBytes.value = 0
+        message.value = "Audio pregenerado borrado"
+    }
+
     /** Voces de IA instaladas (incluidas las añadidas por el usuario). */
     val installedAi: StateFlow<List<NeuralVoiceModel>> = container.voiceInstaller.installed
 

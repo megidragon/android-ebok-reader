@@ -17,6 +17,10 @@ import com.lectora.engine.tts.TtsEngineRegistry
 import com.lectora.engine.tts.VoiceInfo
 import com.lectora.engine.tts.audio.AudioItem
 import com.lectora.engine.tts.audio.GaplessAudioOutput
+import com.lectora.narration.prerender.AacFileReader
+import com.lectora.narration.prerender.PrerenderStore
+import com.lectora.narration.prerender.PrerenderVariant
+import com.lectora.narration.prerender.RenderedSection
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -59,6 +63,8 @@ class NarrationController(
     private val registry: TtsEngineRegistry,
     private val translator: ParagraphTranslator,
     private val settingsFlow: Flow<NarrationSettings>,
+    /** Audio pregenerado: si una sección está pregenerada con la misma variante, se reproduce. */
+    private val prerender: PrerenderStore? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val _state = MutableStateFlow(NarrationState())
@@ -335,12 +341,26 @@ class NarrationController(
                 val (engine, voice) = resolved
                 _state.update { it.copy(voiceName = voice?.displayName ?: engine.displayName) }
 
-                val prepared = Channel<PreparedParagraph>(capacity = 4)
                 val audio = Channel<AudioItem>(Channel.UNLIMITED)
+                val variant = PrerenderVariant.of(settings, voice?.key ?: engine.engineId, spokenLanguage, translate)
                 launch(Dispatchers.Default) {
-                    produceParagraphs(b, from, settings, translate, spokenLanguage, prepared)
-                }
-                launch(Dispatchers.Default) {
+                    // 1) Secciones pregeneradas (si las hay) desde la posición pedida.
+                    var pos = from
+                    while (prerender != null && pos.section < b.document.sectionCount) {
+                        val rendered = prerender.section(b.bookId, variant, pos.section) ?: break
+                        Log.i(TAG, "Reproduciendo audio pregenerado de la sección ${pos.section}")
+                        playRendered(s, rendered, pos, audio, settings)
+                        pos = ReadingPosition(pos.section + 1, 0, 0)
+                    }
+                    if (pos.section >= b.document.sectionCount) {
+                        audio.send(AudioItem.End)
+                        audio.close()
+                        return@launch
+                    }
+                    // 2) A partir de ahí, narración en vivo (sin corte: mismo flujo de audio).
+                    val prepared = Channel<PreparedParagraph>(capacity = 4)
+                    val livePos = pos
+                    launch { produceParagraphs(b, livePos, settings, translate, spokenLanguage, prepared) }
                     synthesize(s, prepared, audio, engine, voice, spokenLanguage, settings)
                 }
                 output.play(audio)
@@ -469,6 +489,69 @@ class NarrationController(
         } finally {
             out.close()
         }
+    }
+
+    // ---------------- Audio pregenerado ----------------
+
+    /**
+     * Reproduce una sección pregenerada desde [from] (si es la misma sección) o desde su inicio,
+     * emitiendo los markers de cada oración en su instante exacto (resaltado y progreso).
+     */
+    private suspend fun playRendered(
+        s: Session,
+        r: RenderedSection,
+        from: ReadingPosition,
+        audio: SendChannel<AudioItem>,
+        settings: NarrationSettings,
+    ) {
+        val lookaheadMs = settings.lookaheadSeconds * 1000L
+        var next = if (from.section == r.section) {
+            r.utterances.indexOfFirst { it.paragraph > from.paragraph || (it.paragraph == from.paragraph && it.sentence >= from.sentence) }
+                .let { if (it < 0) r.utterances.size else it }
+        } else {
+            0
+        }
+        if (next >= r.utterances.size && r.utterances.isNotEmpty()) return
+        val startMs = r.utterances.getOrNull(next)?.startMs ?: 0L
+        var format: PcmFormat? = null
+        var framesOut = 0L
+        AacFileReader.decode(
+            r.audio,
+            startMs,
+            onFormat = { rate, channels ->
+                val f = PcmFormat(rate, channels)
+                format = f
+                audio.trySend(AudioItem.Format(f))
+            },
+            onPcm = { chunk ->
+                val f = format!!
+                var off = 0
+                while (off < chunk.size) {
+                    val posMs = startMs + framesOut * 1000 / f.sampleRate
+                    val u = r.utterances.getOrNull(next)
+                    if (u != null && u.startMs <= posMs) {
+                        // Ritmo: no adelantarse más de N segundos a lo que suena.
+                        s.played.first { s.produced.get() - it < lookaheadMs }
+                        val utterance = Utterance(ReadingPosition(r.section, u.paragraph, u.sentence), u.start, u.end, u.translated, u.text)
+                        audio.send(AudioItem.Marker(UtteranceMarker(s.id, utterance, s.produced.get())))
+                        next++
+                        continue
+                    }
+                    val bytesUntilNext = if (u == null) {
+                        chunk.size - off
+                    } else {
+                        (((u.startMs - posMs) * f.sampleRate / 1000).toInt() * f.bytesPerFrame).coerceAtLeast(f.bytesPerFrame)
+                    }
+                    val n = minOf(chunk.size - off, bytesUntilNext).let { it - it % f.bytesPerFrame }.coerceAtLeast(f.bytesPerFrame)
+                    val end = minOf(chunk.size, off + n)
+                    audio.send(AudioItem.Pcm(chunk.copyOfRange(off, end)))
+                    framesOut += (end - off) / f.bytesPerFrame
+                    s.produced.addAndGet(f.millisForBytes((end - off).toLong()))
+                    off = end
+                }
+                true
+            },
+        )
     }
 
     // ---------------- Etapa 2: síntesis continua ----------------

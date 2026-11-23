@@ -213,6 +213,21 @@ fun SettingsScreen(vm: SettingsViewModel, onBack: () -> Unit) {
                 modifier = Modifier.clickable { requestIgnoreBattery(context) },
             )
 
+            val prerenderBytes by vm.prerenderBytes.collectAsState()
+            LaunchedEffect(Unit) { vm.refreshPrerenderSize() }
+            ListItem(
+                headlineContent = { Text("Narración pregenerada") },
+                supportingContent = {
+                    Text(
+                        if (prerenderBytes == 0L) "Nada guardado. Se pregenera desde el lector (menú ⋮)."
+                        else "Ocupa ${"%.1f".format(prerenderBytes / 1_048_576.0)} MB en el móvil."
+                    )
+                },
+                trailingContent = {
+                    if (prerenderBytes > 0) IconButton(onClick = vm::deleteAllPrerender) { Icon(Icons.Default.Delete, "Borrar todo") }
+                },
+            )
+
             Section("Carpetas sincronizadas")
             if (folders.isEmpty()) Hint("Ninguna. Agrega una desde la biblioteca (+).")
             folders.forEach { f ->

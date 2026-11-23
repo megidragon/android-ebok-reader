@@ -6,6 +6,7 @@ import com.lectora.app.data.DocumentCache
 import com.lectora.app.data.LibraryRepository
 import com.lectora.app.data.LibraryScanWorker
 import com.lectora.app.data.SettingsRepository
+import com.lectora.app.data.TextFilterRepository
 import com.lectora.core.database.LectoraDatabase
 import com.lectora.engine.text.BookOpener
 import com.lectora.engine.translation.MlKitTranslationEngine
@@ -17,6 +18,8 @@ import com.lectora.engine.tts.system.SystemTtsProvider
 import com.lectora.narration.NarrationBook
 import com.lectora.narration.NarrationController
 import com.lectora.narration.NarrationHost
+import com.lectora.narration.prerender.NarrationRenderer
+import com.lectora.narration.prerender.PrerenderStore
 import kotlinx.coroutines.launch
 
 /** Inyección de dependencias manual: un único contenedor por proceso. */
@@ -24,7 +27,8 @@ class AppContainer(app: Application) {
     val context: android.content.Context = app
     val database = LectoraDatabase.create(app)
     val opener = BookOpener(app)
-    val documents = DocumentCache(opener)
+    val textFilters = TextFilterRepository(app)
+    val documents = DocumentCache(opener, textFilters)
     val settings = SettingsRepository(app)
     val translationEngine = MlKitTranslationEngine()
     val translator = CachedParagraphTranslator(database.translations(), translationEngine)
@@ -38,20 +42,27 @@ class AppContainer(app: Application) {
     val voiceInstaller = NeuralVoiceInstaller(neuralTts.voicesDir)
     val ttsRegistry = TtsEngineRegistry(listOf(SystemTtsProvider(app), neuralTts))
 
+    /** Narración pregenerada (audio guardado por páginas para voces pesadas). */
+    val prerenderStore = PrerenderStore(java.io.File(app.filesDir, "prerender"))
+    val renderer = NarrationRenderer(ttsRegistry, translator, prerenderStore)
+
+    suspend fun openNarrationBook(bookId: Long): NarrationBook {
+        val book = library.getBook(bookId) ?: error("Libro $bookId no encontrado")
+        return NarrationBook(
+            bookId = book.id,
+            title = book.title,
+            author = book.author,
+            coverPath = book.coverPath,
+            language = book.language ?: "en",
+            document = library.document(book),
+            savedPosition = library.progress(book.id),
+        )
+    }
+
     val narration = NarrationController(
         context = app,
-        books = { bookId ->
-            val book = library.getBook(bookId) ?: error("Libro $bookId no encontrado")
-            NarrationBook(
-                bookId = book.id,
-                title = book.title,
-                author = book.author,
-                coverPath = book.coverPath,
-                language = book.language ?: "en",
-                document = library.document(book),
-                savedPosition = library.progress(book.id),
-            )
-        },
+        books = { bookId -> openNarrationBook(bookId) },
+        prerender = prerenderStore,
         progressSink = { bookId, position, sectionCount ->
             val paragraphs = library.getBook(bookId)?.let { library.document(it).paragraphs(position.section).size }
             library.saveProgress(bookId, position, sectionCount, paragraphs)

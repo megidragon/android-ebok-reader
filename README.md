@@ -13,7 +13,10 @@ Abres tu EPUB o PDF, pulsas ▶ y Lectora te narra la historia con voz natural, 
 | 🎧 **Te lee el libro** | Narración continua y fluida. Resalta la frase que está leyendo y avanza las páginas sola. |
 | 🔒 **Con la pantalla apagada** | Sigue leyendo con el móvil bloqueado o la app en segundo plano. Controles en la notificación, la pantalla de bloqueo y los auriculares Bluetooth. |
 | 🌍 **Traduce sin internet** | Libros en inglés (u otros idiomas) al español, directamente en el móvil. Puedes ver solo la traducción o el original y la traducción juntos. La narración lee la traducción. |
-| 🗣️ **Varias voces** | Voces de Google del sistema y voces de **IA** que se descargan una vez y funcionan sin conexión (España, México, Argentina…). |
+| 🗣️ **Varias voces** | Voces de Google del sistema y voces de **IA** que se descargan una vez y funcionan sin conexión: un catálogo de más de 180 voces en unos 40 idiomas, y puedes importar tus propios paquetes de voz. |
+| ⏬ **Narración pregenerada** | Para voces pesadas: genera y guarda por adelantado el audio de las páginas que quieras (con la voz e idioma elegidos) y luego se reproduce al instante. Si llegas a una página sin pregenerar, sigue en vivo sin cortes. |
+| 📖 **Pasar página a tu gusto** | Con botones, deslizando con el dedo (con animación) o en scroll continuo, como un documento infinito. |
+| 🧹 **Filtro de texto** | Quita o reemplaza caracteres rotos o textos molestos de un libro (o de todos). Se aplica al leer, traducir y narrar. |
 | 📚 **Tu biblioteca** | Elige una carpeta y Lectora la mantiene sincronizada: detecta libros nuevos, movidos o borrados. Crea colecciones (sagas, pendientes, favoritos…). |
 | 🔖 **Recuerda por dónde ibas** | Cada libro guarda tu página, aunque cambies el archivo de carpeta. |
 | 📄 **Libros enormes** | Pensado para PDF de más de 10.000 páginas: abre rápido y puedes saltar a cualquier página escribiendo el número. |
@@ -42,12 +45,17 @@ Formatos: **EPUB** y **PDF** (con texto; los PDF escaneados como imagen todavía
    - *Voz en español / Voz en inglés*: toca para elegir y pulsa 🔊 para escucharla.
    - *Voces IA (sin conexión)*: descarga voces más naturales. **Davefx (España)** es rápida y suena muy bien en casi cualquier móvil.
 5. **Ir a una página** → icono ☰ (Índice) → escribe el número.
+6. **Cómo pasar página** → menú **Aa** → *Con botones*, *Deslizando* o *Scroll continuo*.
+7. **Más voces** → ⚙️ *Ajustes → Voces IA → Más voces (+180)*, o *Importar paquete* si tienes un archivo de voz `.tar.bz2`.
+8. **Pregenerar narración** (menú ⋮ del lector) → elige desde qué página, cuántas y la voz. Se genera en segundo plano con una notificación; puedes cancelar cuando quieras y lo ya hecho se conserva.
+9. **Texto roto** (menú ⋮ → *Filtro de texto*) → escribe lo que quieres quitar o reemplazar. También te muestra los caracteres raros de la página para quitarlos con un toque.
 
 ### Consejos
 
 - 🔋 En *Ajustes → Segundo plano*, activa **"Sin restricciones de batería"**. Algunos móviles (Xiaomi, Samsung, OPPO…) cortan las apps en segundo plano si no lo haces.
 - 🎚️ Puedes ajustar velocidad, tono y la pausa entre frases y párrafos.
-- 🐢 La voz **Kokoro** es la más natural, pero necesita un móvil potente. En gamas media y baja va más lenta que la lectura y habrá pausas: en ese caso usa una voz Piper (Davefx, Sharvard, Daniela…).
+- 🐢 La voz **Kokoro** es la más natural, pero necesita un móvil potente. En gamas media y baja va más lenta que la lectura: **pregenera** las páginas antes de escucharlas, o usa una voz Piper (Davefx, Sharvard, Daniela…).
+- 💾 Cada página pregenerada ocupa aproximadamente 1 MB. Puedes ver el total y borrarlo en *Ajustes → Segundo plano → Narración pregenerada*.
 
 ---
 

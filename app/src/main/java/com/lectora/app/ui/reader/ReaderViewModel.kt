@@ -8,6 +8,13 @@ import com.lectora.app.AppContainer
 import com.lectora.app.data.PageMode
 import com.lectora.app.data.ReaderSettings
 import com.lectora.app.data.ReaderTheme
+import com.lectora.app.data.FilteredBookDocument
+import com.lectora.app.data.PrerenderWorker
+import com.lectora.engine.tts.VoiceInfo
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
+import com.lectora.app.data.TextFilter
+import com.lectora.app.data.TextFilterRule
 import com.lectora.core.database.BookEntity
 import com.lectora.core.model.BookFormat
 import com.lectora.core.model.ReadingPosition
@@ -110,6 +117,17 @@ class ReaderViewModel(private val container: AppContainer, private val bookId: L
                 runCatching { doc.tableOfContents() }
                 _ui.update { it.copy(sectionTitle = doc.sectionTitle(it.section)) }
                 _sections.update { map -> map.mapValues { (s, c) -> c.copy(title = doc.sectionTitle(s)) } }
+            }
+        }
+        // Filtro personal: al cambiar las reglas, recargar el texto (y la narración si suena).
+        viewModelScope.launch {
+            var first = true
+            container.textFilters.observe(bookId).collect {
+                if (first) {
+                    first = false
+                } else {
+                    reloadAfterFilterChange()
+                }
             }
         }
         viewModelScope.launch {
@@ -308,10 +326,163 @@ class ReaderViewModel(private val container: AppContainer, private val bookId: L
         }
     }
 
+    // ---------------- Narración pregenerada ----------------
+
+    data class PrerenderUi(
+        val voiceName: String? = null,
+        val voiceKey: String? = null,
+        val spokenLanguage: String? = null,
+        val translated: Boolean = false,
+        val voices: List<VoiceInfo> = emptyList(),
+        /** Secciones ya pregeneradas con la voz/idioma/velocidad actuales. */
+        val rendered: List<Int> = emptyList(),
+        val bytes: Long = 0,
+        val lastReadSection: Int? = null,
+        val running: Boolean = false,
+        val done: Int = 0,
+        val total: Int = 0,
+        val currentSection: Int = 0,
+        val error: String? = null,
+    )
+
+    private val _prerender = MutableStateFlow(PrerenderUi())
+    val prerender: StateFlow<PrerenderUi> = _prerender.asStateFlow()
+
+    init {
+        observePrerenderWork()
+    }
+
+    fun refreshPrerender() = viewModelScope.launch {
+        runCatching {
+            val book = container.openNarrationBook(bookId)
+            val settings = container.settings.narration.first()
+            val (variant, voiceName) = container.renderer.variantFor(book, settings) ?: return@launch
+            val summary = withContext(Dispatchers.IO) {
+                container.prerenderStore.summaries(bookId).firstOrNull { it.variant.id == variant.id }
+            }
+            val voices = container.ttsRegistry.voices(variant.spokenLanguage)
+            _prerender.update {
+                it.copy(
+                    voiceName = voiceName,
+                    voiceKey = variant.voiceKey,
+                    spokenLanguage = variant.spokenLanguage,
+                    translated = variant.translated,
+                    voices = voices,
+                    rendered = summary?.sections.orEmpty(),
+                    bytes = summary?.bytes ?: 0,
+                    lastReadSection = library.progress(bookId)?.section,
+                )
+            }
+        }
+    }
+
+    fun startPrerender(fromSection: Int, count: Int) {
+        _prerender.update { it.copy(error = null) }
+        PrerenderWorker.start(container.context, bookId, fromSection, count)
+    }
+
+    fun cancelPrerender() = PrerenderWorker.cancel(container.context, bookId)
+
+    fun deletePrerender() = viewModelScope.launch {
+        withContext(Dispatchers.IO) { container.prerenderStore.delete(bookId) }
+        refreshPrerender()
+    }
+
+    /** Cambia la voz del idioma narrado (la misma que usará la reproducción). */
+    fun choosePrerenderVoice(voice: VoiceInfo) = viewModelScope.launch {
+        val lang = _prerender.value.spokenLanguage ?: return@launch
+        container.settings.setVoice(lang, voice.key)
+        refreshPrerender()
+    }
+
+    private fun observePrerenderWork() = viewModelScope.launch {
+        WorkManager.getInstance(container.context)
+            .getWorkInfosForUniqueWorkFlow(PrerenderWorker.uniqueName(bookId))
+            .collect { infos ->
+                val info = infos.firstOrNull() ?: return@collect
+                val running = info.state == WorkInfo.State.RUNNING || info.state == WorkInfo.State.ENQUEUED
+                _prerender.update {
+                    it.copy(
+                        running = running,
+                        done = info.progress.getInt(PrerenderWorker.KEY_DONE, if (running) it.done else 0),
+                        total = info.progress.getInt(PrerenderWorker.KEY_TOTAL, it.total),
+                        currentSection = info.progress.getInt(PrerenderWorker.KEY_SECTION, it.currentSection),
+                        error = if (info.state == WorkInfo.State.FAILED) info.outputData.getString(PrerenderWorker.KEY_ERROR) ?: "Error" else null,
+                    )
+                }
+                if (!running || info.progress.getInt(PrerenderWorker.KEY_DONE, 0) > 0) refreshPrerender()
+            }
+    }
+
+    // ---------------- Filtro personal de texto ----------------
+
+    val filterRules: StateFlow<List<TextFilterRule>> =
+        container.textFilters.observe(bookId).stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    fun addFilter(find: String, replace: String, regex: Boolean, global: Boolean) = viewModelScope.launch {
+        if (find.isEmpty()) return@launch
+        container.textFilters.add(bookId, TextFilterRule(find = find, replace = replace, regex = regex, global = global))
+    }
+
+    fun removeFilter(id: String) = viewModelScope.launch { container.textFilters.remove(id) }
+    fun setFilterEnabled(id: String, enabled: Boolean) = viewModelScope.launch { container.textFilters.setEnabled(id, enabled) }
+
+    /** Coincidencias de una regla en el texto original de la sección actual (vista previa). */
+    suspend fun previewMatches(find: String, regex: Boolean): Int {
+        val doc = document as? FilteredBookDocument ?: return 0
+        val text = runCatching { doc.rawParagraphs(_ui.value.section) }.getOrDefault(emptyList()).joinToString("\n")
+        return TextFilter.countMatches(TextFilterRule(find = find, regex = regex), text)
+    }
+
+    /**
+     * Caracteres "raros" que siguen en la sección actual (ya filtrada): uso privado, de control,
+     * de reemplazo (�), sueltos de pares UTF-16 o símbolos poco habituales. Son los que suelen
+     * romper la narración.
+     */
+    suspend fun suspiciousCharacters(): List<Pair<String, Int>> = withContext(Dispatchers.Default) {
+        val doc = document ?: return@withContext emptyList()
+        val text = runCatching { doc.paragraphs(_ui.value.section) }.getOrDefault(emptyList()).joinToString("\n")
+        val counts = HashMap<String, Int>()
+        var i = 0
+        while (i < text.length) {
+            val cp = text.codePointAt(i)
+            val type = Character.getType(cp)
+            val odd = cp == 0xFFFD ||
+                type == Character.PRIVATE_USE.toInt() || type == Character.UNASSIGNED.toInt() ||
+                type == Character.SURROGATE.toInt() ||
+                (type == Character.CONTROL.toInt() && cp != '\n'.code && cp != '\t'.code) ||
+                (type == Character.OTHER_SYMBOL.toInt() && cp !in 0x2600..0x27BF && cp < 0x1F000) ||
+                cp in 0x2500..0x259F // dibujos de cajas
+            if (odd) {
+                val s = String(Character.toChars(cp))
+                counts[s] = (counts[s] ?: 0) + 1
+            }
+            i += Character.charCount(cp)
+        }
+        counts.entries.sortedByDescending { it.value }.take(12).map { it.key to it.value }
+    }
+
+    private var lastVisibleParagraph = 0
+
+    private fun reloadAfterFilterChange() {
+        translateJobs.values.forEach { it.cancel() }
+        translateJobs.clear()
+        loadJobs.values.forEach { it.cancel() }
+        loadJobs.clear()
+        _sections.value = emptyMap()
+        val section = _ui.value.section
+        loadSection(section, lastVisibleParagraph)
+        // Si se está narrando este libro, regenerar el audio desde donde suena con el texto nuevo.
+        val narration = container.narration
+        val state = narration.state.value
+        if (state.bookId == bookId && state.isActive) narration.seekTo(state.position)
+    }
+
     // ---------------- Progreso ----------------
 
     /** El usuario está viendo este párrafo (lectura manual): guardar progreso con un pequeño retraso. */
     fun onParagraphVisible(paragraph: Int, narrationOwnsProgress: Boolean) {
+        lastVisibleParagraph = paragraph
         if (narrationOwnsProgress) return
         // Mientras el libro se abre (segundos en PDF enormes) la lista está vacía y reporta el
         // párrafo 0: guardar eso pisaría el progreso real con la página 1.

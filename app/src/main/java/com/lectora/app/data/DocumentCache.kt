@@ -11,13 +11,18 @@ import kotlinx.coroutines.sync.withLock
  * Comparte los documentos abiertos entre el lector y la narración (evita parsear dos veces el
  * mismo libro). Mantiene como mucho [capacity] libros abiertos.
  */
-class DocumentCache(private val opener: BookOpener, private val capacity: Int = 2) {
+class DocumentCache(
+    private val opener: BookOpener,
+    private val filters: TextFilterRepository,
+    private val capacity: Int = 2,
+) {
     private val mutex = Mutex()
     private val open = LinkedHashMap<Long, BookDocument>(capacity + 1, 0.75f, true)
 
+    /** Documento con el filtro personal de texto del libro ya aplicado. */
     suspend fun get(book: BookEntity): BookDocument = mutex.withLock {
         open[book.id]?.let { return it }
-        val doc = opener.open(Uri.parse(book.uri), book.format)
+        val doc = FilteredBookDocument(opener.open(Uri.parse(book.uri), book.format), book.id, filters)
         open[book.id] = doc
         while (open.size > capacity) {
             val eldest = open.entries.first()

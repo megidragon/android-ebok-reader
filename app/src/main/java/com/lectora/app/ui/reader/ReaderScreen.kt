@@ -75,6 +75,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.lectora.app.data.PageMode
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FilterAlt
+import androidx.compose.material.icons.filled.MoreVert
 import com.lectora.app.data.ReaderTheme
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.lazy.LazyListState
@@ -122,6 +126,8 @@ fun ReaderScreen(
     var follow by rememberSaveable { mutableStateOf(true) }
     var showToc by remember { mutableStateOf(false) }
     var showOriginalPdf by rememberSaveable { mutableStateOf(false) }
+    var showFilter by remember { mutableStateOf(false) }
+    var showPrerender by remember { mutableStateOf(false) }
     val mode = narrationSettings.translationMode
     val translating = narrationSettings.translates(vm.sourceLanguage)
     val effectiveMode = if (translating) mode else TranslationMode.ORIGINAL
@@ -210,13 +216,31 @@ fun ReaderScreen(
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Atrás") } },
                 actions = {
                     TranslationMenu(mode, onSelect = vm::setTranslationMode)
-                    if (ui.isPdf) {
-                        IconButton(onClick = { showOriginalPdf = !showOriginalPdf }) {
-                            Icon(if (showOriginalPdf) Icons.Default.TextFields else Icons.Default.Image, "Vista original / texto")
-                        }
-                    }
                     IconButton(onClick = { showToc = true }) { Icon(Icons.AutoMirrored.Filled.List, "Índice") }
                     AppearanceMenu(readerSettings.fontScale, readerSettings.theme, readerSettings.pageMode, vm)
+                    var overflow by remember { mutableStateOf(false) }
+                    Box {
+                        IconButton(onClick = { overflow = true }) { Icon(Icons.Default.MoreVert, "Más opciones") }
+                        DropdownMenu(expanded = overflow, onDismissRequest = { overflow = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Filtro de texto…") },
+                                leadingIcon = { Icon(Icons.Default.FilterAlt, null) },
+                                onClick = { overflow = false; showFilter = true },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Pregenerar narración…") },
+                                leadingIcon = { Icon(Icons.Default.Download, null) },
+                                onClick = { overflow = false; showPrerender = true },
+                            )
+                            if (ui.isPdf) {
+                                DropdownMenuItem(
+                                    text = { Text(if (showOriginalPdf) "Ver como texto" else "Ver página original (PDF)") },
+                                    leadingIcon = { Icon(if (showOriginalPdf) Icons.Default.TextFields else Icons.Default.Image, null) },
+                                    onClick = { overflow = false; showOriginalPdf = !showOriginalPdf },
+                                )
+                            }
+                        }
+                    }
                 },
             )
         },
@@ -346,6 +370,9 @@ fun ReaderScreen(
         }
     }
 
+    if (showFilter) TextFilterDialog(vm, isPdf = ui.isPdf, onDismiss = { showFilter = false })
+    if (showPrerender) PrerenderDialog(vm, currentSection = ui.section, sectionCount = ui.sectionCount, isPdf = ui.isPdf, onDismiss = { showPrerender = false })
+
     if (showToc) {
         val entries by produceState<List<TocEntry>?>(null) { value = vm.tableOfContents() }
         val unit = if (ui.isPdf) "página" else "sección"
@@ -422,6 +449,285 @@ fun ReaderScreen(
             confirmButton = { TextButton(onClick = { showToc = false }) { Text("Cerrar") } },
         )
     }
+}
+
+/** [3400, 3401, 3402, 3500] -> "3401–3403, 3501" (números para el usuario, base 1). */
+private fun formatRanges(sections: List<Int>): String {
+    if (sections.isEmpty()) return ""
+    val out = ArrayList<String>()
+    var start = sections[0]
+    var prev = start
+    for (s in sections.drop(1) + Int.MIN_VALUE) {
+        if (s == prev + 1) {
+            prev = s
+            continue
+        }
+        out.add(if (start == prev) "${start + 1}" else "${start + 1}–${prev + 1}")
+        start = s
+        prev = s
+    }
+    return out.joinToString(", ")
+}
+
+/**
+ * Pregenerar narración: genera y guarda el audio de varias páginas/capítulos por adelantado,
+ * con la voz e idioma elegidos. Pensado para voces pesadas que no llegan a tiempo real.
+ */
+@Composable
+private fun PrerenderDialog(vm: ReaderViewModel, currentSection: Int, sectionCount: Int, isPdf: Boolean, onDismiss: () -> Unit) {
+    val p by vm.prerender.collectAsState()
+    LaunchedEffect(Unit) { vm.refreshPrerender() }
+    val unitPlural = if (isPdf) "páginas" else "capítulos"
+    val unitSingular = if (isPdf) "página" else "capítulo"
+    // 0 = página actual, 1 = última leída, 2 = otra
+    var origin by remember { mutableStateOf(0) }
+    var custom by remember { mutableStateOf("") }
+    var count by remember { mutableStateOf(10f) }
+    var voiceMenu by remember { mutableStateOf(false) }
+    val from = when (origin) {
+        1 -> p.lastReadSection ?: currentSection
+        2 -> (custom.toIntOrNull()?.minus(1))?.coerceIn(0, (sectionCount - 1).coerceAtLeast(0)) ?: currentSection
+        else -> currentSection
+    }
+    val maxCount = minOf(200, (sectionCount - from).coerceAtLeast(1))
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Pregenerar narración") },
+        text = {
+            LazyColumn(Modifier.height(500.dp)) {
+                item {
+                    Text(
+                        "Genera ahora el audio de varias $unitPlural y lo guarda en el móvil. Después se reproduce al instante, aunque la voz sea lenta. Sigue en segundo plano con la pantalla apagada.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text("Voz", style = MaterialTheme.typography.titleSmall)
+                    Box {
+                        OutlinedButton(onClick = { voiceMenu = true }, enabled = !p.running) {
+                            Text(p.voiceName ?: "Cargando…", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        DropdownMenu(expanded = voiceMenu, onDismissRequest = { voiceMenu = false }) {
+                            p.voices.forEach { v ->
+                                DropdownMenuItem(
+                                    text = { Text(v.displayName, maxLines = 2) },
+                                    trailingIcon = { if (v.key == p.voiceKey) Icon(Icons.Default.Check, null) },
+                                    onClick = { voiceMenu = false; vm.choosePrerenderVoice(v) },
+                                )
+                            }
+                        }
+                    }
+                    p.spokenLanguage?.let { lang ->
+                        val name = java.util.Locale.forLanguageTag(lang).getDisplayLanguage(java.util.Locale.forLanguageTag("es"))
+                        Text(
+                            "Idioma: $name" + if (p.translated) " (traducido)" else " (original)",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Text(
+                        "Usa la traducción, velocidad y pausas actuales. Si las cambias, el audio pregenerado deja de coincidir y se narra en vivo.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text("Desde", style = MaterialTheme.typography.titleSmall)
+                    listOf(
+                        "${unitSingular.replaceFirstChar { it.uppercase() }} actual (${currentSection + 1})",
+                        "Última leída (${(p.lastReadSection ?: currentSection) + 1})",
+                        "Otra:",
+                    ).forEachIndexed { i, label ->
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { origin = i }) {
+                            androidx.compose.material3.RadioButton(selected = origin == i, onClick = { origin = i })
+                            Text(label)
+                            if (i == 2) {
+                                OutlinedTextField(
+                                    custom, { custom = it.filter(Char::isDigit).take(6); origin = 2 },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    modifier = Modifier.padding(start = 8.dp).fillMaxWidth(0.6f),
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    val n = count.toInt().coerceIn(1, maxCount)
+                    Text("¿Cuántas $unitPlural?", style = MaterialTheme.typography.titleSmall)
+                    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(5, 10, 25, 50, 100).filter { it <= maxCount || it == 5 }.forEach { option ->
+                            androidx.compose.material3.FilterChip(
+                                selected = n == option.coerceAtMost(maxCount),
+                                onClick = { count = option.toFloat() },
+                                label = { Text("$option") },
+                                enabled = !p.running,
+                            )
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Otra cantidad:", style = MaterialTheme.typography.bodyMedium)
+                        OutlinedTextField(
+                            value = n.toString(),
+                            onValueChange = { v -> v.filter(Char::isDigit).take(3).toIntOrNull()?.let { count = it.toFloat() } },
+                            singleLine = true,
+                            enabled = !p.running,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.padding(start = 8.dp).fillMaxWidth(0.45f),
+                        )
+                    }
+                    Text(
+                        "$n $unitPlural: de la ${from + 1} a la ${from + n} · aprox. ${"%.0f".format(n * 1.2)} MB",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    if (p.running) {
+                        Text(
+                            "Generando ${p.done} de ${p.total} · $unitSingular ${p.currentSection + 1}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        androidx.compose.material3.LinearProgressIndicator(
+                            progress = { if (p.total > 0) p.done.toFloat() / p.total else 0f },
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        )
+                        OutlinedButton(onClick = { vm.cancelPrerender() }) { Text("Cancelar") }
+                    } else {
+                        Button(onClick = { vm.startPrerender(from, n) }, enabled = p.voiceName != null) { Text("Pregenerar") }
+                    }
+                    p.error?.let { Text("Error: $it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                    Spacer(Modifier.height(12.dp))
+                    HorizontalDivider()
+                    Spacer(Modifier.height(8.dp))
+                    Text("Ya pregenerado con esta voz", style = MaterialTheme.typography.titleSmall)
+                    if (p.rendered.isEmpty()) {
+                        Text("Nada todavía.", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        Text(
+                            "${unitPlural.replaceFirstChar { it.uppercase() }} ${formatRanges(p.rendered)} · ${"%.1f".format(p.bytes / 1_048_576.0)} MB",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        TextButton(onClick = { vm.deletePrerender() }, enabled = !p.running) { Text("Borrar audio pregenerado de este libro") }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
+    )
+}
+
+/**
+ * Filtro personal: reemplazar o quitar textos/caracteres que rompen la lectura o la narración.
+ * Las reglas se aplican al libro actual (o a todos) en el lector, la traducción y la narración.
+ */
+@Composable
+private fun TextFilterDialog(vm: ReaderViewModel, isPdf: Boolean, onDismiss: () -> Unit) {
+    val rules by vm.filterRules.collectAsState()
+    var find by remember { mutableStateOf("") }
+    var replace by remember { mutableStateOf("") }
+    var regex by remember { mutableStateOf(false) }
+    var global by remember { mutableStateOf(false) }
+    val matches by produceState<Int?>(null, find, regex) {
+        value = null
+        if (find.isNotEmpty()) {
+            kotlinx.coroutines.delay(250)
+            value = vm.previewMatches(find, regex)
+        }
+    }
+    val suspicious by produceState<List<Pair<String, Int>>?>(null, rules) { value = vm.suspiciousCharacters() }
+    val unit = if (isPdf) "esta página" else "este capítulo"
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Filtro de texto") },
+        text = {
+            LazyColumn(Modifier.height(480.dp)) {
+                item {
+                    Text(
+                        "Reemplaza o quita textos rotos. Se aplica al leer, traducir y narrar.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(find, { find = it }, label = { Text("Buscar") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(
+                        replace, { replace = it },
+                        label = { Text("Reemplazar por (vacío = quitar)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.material3.Checkbox(regex, { regex = it })
+                        Text("Expresión regular", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.material3.Checkbox(global, { global = it })
+                        Text("Aplicar a todos los libros", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    if (find.isNotEmpty()) {
+                        Text(
+                            matches?.let { if (it == 1) "1 coincidencia en $unit" else "$it coincidencias en $unit" } ?: "Buscando…",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            vm.addFilter(find, replace, regex, global)
+                            find = ""; replace = ""; regex = false
+                        },
+                        enabled = find.isNotEmpty(),
+                        modifier = Modifier.padding(top = 4.dp),
+                    ) { Text("Añadir regla") }
+                }
+                val odd = suspicious
+                if (!odd.isNullOrEmpty()) {
+                    item {
+                        Spacer(Modifier.height(12.dp))
+                        Text("Caracteres raros en $unit", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "Toca uno para quitarlo de este libro.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            odd.forEach { (ch, n) ->
+                                androidx.compose.material3.AssistChip(
+                                    onClick = { vm.addFilter(ch, "", regex = false, global = false) },
+                                    label = { Text("$ch  ×$n  (U+%04X)".format(ch.codePointAt(0))) },
+                                )
+                            }
+                        }
+                    }
+                }
+                item {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        if (rules.isEmpty()) "Sin reglas todavía." else "Reglas activas",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                }
+                items(rules.size, key = { rules[it].id }) { i ->
+                    val r = rules[i]
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                        androidx.compose.material3.Switch(checked = r.enabled, onCheckedChange = { vm.setFilterEnabled(r.id, it) })
+                        Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
+                            Text(
+                                "«${r.find}» → " + if (r.replace.isEmpty()) "(quitar)" else "«${r.replace}»",
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                listOfNotNull(if (r.regex) "regex" else null, if (r.global) "todos los libros" else "este libro").joinToString(" · "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        IconButton(onClick = { vm.removeFilter(r.id) }) { Icon(Icons.Default.Delete, "Eliminar regla") }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Listo") } },
+    )
 }
 
 /** Título a mostrar según el modo de traducción (en "Traducido" nunca el original). */

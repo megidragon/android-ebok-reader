@@ -14,8 +14,8 @@ android {
         applicationId = "com.lectora.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
         // Solo ARM (todos los móviles reales): evita ~40 MB de librerías x86 de ONNX Runtime.
         ndk { abiFilters += setOf("arm64-v8a", "armeabi-v7a") }
     }
