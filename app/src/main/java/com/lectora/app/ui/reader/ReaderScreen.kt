@@ -80,6 +80,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FilterAlt
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.ui.graphics.luminance
 import com.lectora.app.data.ReaderTheme
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.lazy.LazyListState
@@ -122,6 +123,17 @@ fun ReaderScreen(
     val current: Utterance? = if (isThisBook) narration.current else null
     val colors = pageColors(readerSettings.theme)
     val pageMode = readerSettings.pageMode
+
+    // Iconos de la barra de estado legibles sobre la página (oscuros en temas claro/sepia).
+    val view = androidx.compose.ui.platform.LocalView.current
+    val lightPage = colors.background.luminance() > 0.5f
+    androidx.compose.runtime.DisposableEffect(lightPage) {
+        val window = (view.context as? android.app.Activity)?.window
+        val controller = window?.let { androidx.core.view.WindowCompat.getInsetsController(it, view) }
+        val previous = controller?.isAppearanceLightStatusBars
+        controller?.isAppearanceLightStatusBars = lightPage
+        onDispose { if (previous != null) controller.isAppearanceLightStatusBars = previous }
+    }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     var follow by rememberSaveable { mutableStateOf(true) }
