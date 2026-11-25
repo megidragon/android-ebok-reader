@@ -80,6 +80,41 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Surface
 import com.lectora.core.database.BookEntity
 import com.lectora.core.database.BookWithProgress
+import android.text.format.Formatter
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridScope
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.automirrored.filled.ViewList
+import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
+import com.lectora.app.data.LibraryDisplay
+import com.lectora.app.data.LibrarySortField
+import com.lectora.core.model.BookFormat
+import java.util.Locale
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -96,6 +131,7 @@ fun LibraryScreen(
     val scanning by vm.scanning.collectAsState()
     val busy by vm.busy.collectAsState()
     val message by vm.message.collectAsState()
+    val display by vm.display.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     var tab by rememberSaveable { mutableIntStateOf(-1) }
     var addMenu by remember { mutableStateOf(false) }
@@ -168,7 +204,7 @@ fun LibraryScreen(
                 }
             }
             when (currentTab) {
-                0 -> BookGrid(reading, onOpenBook, { bookMenu = it }, empty = "Aún no empezaste ningún libro.")
+                0 -> BookGrid(reading, onOpenBook, { bookMenu = it }, empty = "Aún no empezaste ningún libro.", display = display)
                 1 -> when {
                     all == null -> Unit
                     all!!.isEmpty() -> EmptyLibrary(
@@ -191,13 +227,51 @@ fun LibraryScreen(
     bookMenu?.let { book -> BookActionsDialog(book, vm, onDismiss = { bookMenu = null }) }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+/** Columnas y espaciado de cada tamaño de vista. */
+@Composable
+private fun BooksLazyGrid(display: LibraryDisplay, content: LazyGridScope.() -> Unit) {
+    LazyVerticalGrid(
+        columns = when (display) {
+            LibraryDisplay.LARGE -> GridCells.Adaptive(112.dp)
+            LibraryDisplay.COMPACT -> GridCells.Adaptive(76.dp)
+            LibraryDisplay.LIST -> GridCells.Fixed(1)
+        },
+        contentPadding = PaddingValues(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (display == LibraryDisplay.COMPACT) 8.dp else 12.dp),
+        verticalArrangement = Arrangement.spacedBy(
+            when (display) {
+                LibraryDisplay.LARGE -> 16.dp
+                LibraryDisplay.COMPACT -> 10.dp
+                LibraryDisplay.LIST -> 2.dp
+            }
+        ),
+        modifier = Modifier.fillMaxSize(),
+        content = content,
+    )
+}
+
+private fun LazyGridScope.bookItems(
+    books: List<BookWithProgress>,
+    display: LibraryDisplay,
+    onOpenBook: (Long) -> Unit,
+    onLongPress: (BookEntity) -> Unit,
+) {
+    items(books, key = { it.book.id }) { item ->
+        when (display) {
+            LibraryDisplay.LARGE -> BookTile(item, onOpenBook, onLongPress)
+            LibraryDisplay.COMPACT -> CompactBookTile(item, onOpenBook, onLongPress)
+            LibraryDisplay.LIST -> BookRow(item, onOpenBook, onLongPress)
+        }
+    }
+}
+
 @Composable
 fun BookGrid(
     books: List<BookWithProgress>,
     onOpenBook: (Long) -> Unit,
     onLongPress: (BookEntity) -> Unit,
     empty: String,
+    display: LibraryDisplay = LibraryDisplay.LARGE,
 ) {
     if (books.isEmpty()) {
         Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
@@ -205,36 +279,23 @@ fun BookGrid(
         }
         return
     }
-    LazyVerticalGrid(
-        columns = GridCells.Adaptive(112.dp),
-        contentPadding = PaddingValues(12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        items(books, key = { it.book.id }) { item -> BookTile(item, onOpenBook, onLongPress) }
-    }
+    BooksLazyGrid(display) { bookItems(books, display, onOpenBook, onLongPress) }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun BookTile(item: BookWithProgress, onOpenBook: (Long) -> Unit, onLongPress: (BookEntity) -> Unit) {
+    val title = item.book.displayTitle(LocalTitleSource.current)
     Column(
         Modifier.combinedClickable(
             onClick = { onOpenBook(item.book.id) },
             onLongClick = { onLongPress(item.book) },
         )
     ) {
-        BookCover(item.book.coverPath, item.book.displayTitle(LocalTitleSource.current), Modifier.fillMaxWidth().aspectRatio(0.68f))
-        val fraction = item.progress?.fraction ?: 0f
-        if (fraction > 0f) {
-            LinearProgressIndicator(
-                progress = { fraction },
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(3.dp),
-            )
-        }
+        BookCover(item.book.coverPath, title, Modifier.fillMaxWidth().aspectRatio(0.68f))
+        ProgressBar(item, Modifier.fillMaxWidth().padding(top = 4.dp))
         Text(
-            item.book.displayTitle(LocalTitleSource.current),
+            title,
             style = MaterialTheme.typography.bodyMedium,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
@@ -252,43 +313,174 @@ private fun BookTile(item: BookWithProgress, onOpenBook: (Long) -> Unit, onLongP
     }
 }
 
+/** Portada pequeña con el título en una línea: caben unas 4-5 por fila. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun CompactBookTile(item: BookWithProgress, onOpenBook: (Long) -> Unit, onLongPress: (BookEntity) -> Unit) {
+    val title = item.book.displayTitle(LocalTitleSource.current)
+    Column(
+        Modifier.combinedClickable(
+            onClick = { onOpenBook(item.book.id) },
+            onLongClick = { onLongPress(item.book) },
+        )
+    ) {
+        BookCover(item.book.coverPath, title, Modifier.fillMaxWidth().aspectRatio(0.68f))
+        ProgressBar(item, Modifier.fillMaxWidth().padding(top = 3.dp))
+        Text(
+            title,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 3.dp),
+        )
+    }
+}
+
+/** Una fila por libro: miniatura, título, autor, formato, tamaño, idioma y progreso. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun BookRow(item: BookWithProgress, onOpenBook: (Long) -> Unit, onLongPress: (BookEntity) -> Unit) {
+    val book = item.book
+    val title = book.displayTitle(LocalTitleSource.current)
+    val context = LocalContext.current
+    val fraction = item.progress?.fraction ?: 0f
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.small)
+            .combinedClickable(onClick = { onOpenBook(book.id) }, onLongClick = { onLongPress(book) })
+            .padding(vertical = 6.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        BookCover(book.coverPath, title, Modifier.width(48.dp).aspectRatio(0.68f))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            book.author?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            val meta = buildList {
+                add(book.format.name)
+                if (book.sizeBytes > 0) add(Formatter.formatShortFileSize(context, book.sizeBytes))
+                book.primaryLanguage?.let { add(it.uppercase()) }
+                if (fraction >= 0.999f) add("Terminado") else if (fraction > 0f) add("${(fraction * 100).roundToInt()} %")
+            }.joinToString(" · ")
+            Text(meta, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            ProgressBar(item, Modifier.fillMaxWidth().padding(top = 4.dp))
+        }
+    }
+}
+
+@Composable
+private fun ProgressBar(item: BookWithProgress, modifier: Modifier) {
+    val fraction = item.progress?.fraction ?: 0f
+    if (fraction > 0f) LinearProgressIndicator(progress = { fraction }, modifier = modifier.height(3.dp))
+}
+
+/** Nombre del idioma en español ("en" → "Inglés"). */
+private fun languageName(code: String): String =
+    Locale.forLanguageTag(code).getDisplayLanguage(Locale("es")).replaceFirstChar { it.titlecase(Locale("es")) }
+        .ifBlank { code.uppercase() }
+
 /**
  * Pestaña Biblioteca: por defecto respeta la estructura de subcarpetas de la carpeta
- * sincronizada; con "Todo" muestra todos los libros juntos.
+ * sincronizada; con "Todo" muestra todos los libros juntos. Arriba: buscador, orden,
+ * filtros y tamaño de vista.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LibraryBrowser(vm: LibraryViewModel, onOpenBook: (Long) -> Unit, onLongPress: (BookEntity) -> Unit) {
     val view by vm.libraryView.collectAsState()
     val all by vm.all.collectAsState()
+    val visible by vm.visible.collectAsState()
     val content by vm.folderContent.collectAsState()
     val location by vm.location.collectAsState()
+    val display by vm.display.collectAsState()
+    val filters by vm.filters.collectAsState()
+    val query by vm.query.collectAsState()
+    val results by vm.searchResults.collectAsState()
+    var showFilters by remember { mutableStateOf(false) }
+    val focus = LocalFocusManager.current
 
-    // Atrás sube una carpeta (en vez de salir de la app).
-    androidx.activity.compose.BackHandler(enabled = view == LibraryView.FOLDERS && location != null && content?.isTop == false) {
+    // Atrás: primero borra la búsqueda; si no, sube una carpeta (en vez de salir de la app).
+    androidx.activity.compose.BackHandler(enabled = query.isNotEmpty()) {
+        vm.setQuery("")
+        focus.clearFocus()
+    }
+    androidx.activity.compose.BackHandler(
+        enabled = query.isEmpty() && view == LibraryView.FOLDERS && location != null && content?.isTop == false
+    ) {
         vm.goUp()
     }
 
     Column(Modifier.fillMaxSize()) {
+        SearchField(
+            query = query,
+            onQueryChange = vm::setQuery,
+            onDone = { focus.clearFocus() },
+            modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 8.dp),
+        )
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            androidx.compose.material3.FilterChip(
+            FilterChip(
                 selected = view == LibraryView.FOLDERS,
                 onClick = { vm.setLibraryView(LibraryView.FOLDERS) },
                 label = { Text("Carpetas") },
-                leadingIcon = { Icon(Icons.Default.Folder, null, Modifier.size(18.dp)) },
             )
             Spacer(Modifier.width(8.dp))
-            androidx.compose.material3.FilterChip(
+            FilterChip(
                 selected = view == LibraryView.ALL,
                 onClick = { vm.setLibraryView(LibraryView.ALL) },
                 label = { Text("Todo (${all?.size ?: 0})") },
             )
+            Spacer(Modifier.weight(1f))
+            SortButton(vm)
+            IconButton(onClick = { showFilters = true }) {
+                BadgedBox(badge = { if (filters.active) Badge { Text("${filters.count}") } }) {
+                    Icon(Icons.Default.FilterList, "Filtros")
+                }
+            }
+            DisplayButton(display, vm::setDisplay)
         }
+
+        val noMatches: @Composable (String) -> Unit = { text ->
+            Column(
+                Modifier.fillMaxSize().padding(32.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(text, style = MaterialTheme.typography.bodyLarge)
+                if (filters.active) TextButton(onClick = vm::clearFilters) { Text("Quitar filtros") }
+            }
+        }
+
+        // Búsqueda: resultados de toda la biblioteca, sin importar la carpeta en la que estés.
+        results?.let { found ->
+            if (found.isEmpty()) {
+                noMatches("Ningún libro coincide con «${query.trim()}».")
+            } else {
+                Text(
+                    if (found.size == 1) "1 resultado" else "${found.size} resultados",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+                BooksLazyGrid(display) { bookItems(found, display, onOpenBook, onLongPress) }
+            }
+            return@Column
+        }
+
         if (view == LibraryView.ALL) {
-            BookGrid(all.orEmpty(), onOpenBook, onLongPress, empty = "")
+            if (visible.isEmpty()) noMatches("Ningún libro coincide con los filtros.")
+            else BooksLazyGrid(display) { bookItems(visible, display, onOpenBook, onLongPress) }
             return@Column
         }
         val c = content ?: return@Column
@@ -308,17 +500,12 @@ private fun LibraryBrowser(vm: LibraryViewModel, onOpenBook: (Long) -> Unit, onL
             }
         }
         if (c.folders.isEmpty() && c.books.isEmpty()) {
-            Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) { Text("Carpeta vacía.") }
+            if (filters.active) noMatches("Ningún libro de esta carpeta coincide con los filtros.")
+            else Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) { Text("Carpeta vacía.") }
             return@Column
         }
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(112.dp),
-            contentPadding = PaddingValues(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            items(c.folders, key = { "f:" + it.location.rootUri + "/" + it.location.dir }, span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { folder ->
+        BooksLazyGrid(display) {
+            items(c.folders, key = { "f:" + it.location.rootUri + "/" + it.location.dir }, span = { GridItemSpan(maxLineSpan) }) { folder ->
                 Surface(
                     onClick = { vm.openFolder(folder.location) },
                     shape = MaterialTheme.shapes.medium,
@@ -337,7 +524,143 @@ private fun LibraryBrowser(vm: LibraryViewModel, onOpenBook: (Long) -> Unit, onL
                     }
                 }
             }
-            items(c.books, key = { it.book.id }) { item -> BookTile(item, onOpenBook, onLongPress) }
+            bookItems(c.books, display, onOpenBook, onLongPress)
+        }
+    }
+
+    if (showFilters) FiltersSheet(vm, onDismiss = { showFilters = false })
+}
+
+@Composable
+private fun SearchField(query: String, onQueryChange: (String) -> Unit, onDone: () -> Unit, modifier: Modifier) {
+    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = modifier.height(44.dp)) {
+        Row(Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Search, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.width(8.dp))
+            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                if (query.isEmpty()) {
+                    Text("Buscar por título o autor", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge)
+                }
+                BasicTextField(
+                    value = query,
+                    onValueChange = onQueryChange,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { onDone() }),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            if (query.isNotEmpty()) {
+                IconButton(onClick = { onQueryChange(""); onDone() }, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.Close, "Borrar búsqueda")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SortButton(vm: LibraryViewModel) {
+    val sort by vm.sort.collectAsState()
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) { Icon(Icons.AutoMirrored.Filled.Sort, "Ordenar") }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            Text(
+                "Ordenar por",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            LibrarySortField.entries.forEach { field ->
+                val selected = sort.field == field
+                DropdownMenuItem(
+                    text = {
+                        Text(field.label, color = if (selected) MaterialTheme.colorScheme.primary else Color.Unspecified)
+                    },
+                    leadingIcon = {
+                        if (selected) Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary)
+                        else Spacer(Modifier.size(24.dp))
+                    },
+                    trailingIcon = {
+                        if (selected) {
+                            Icon(
+                                if (sort.ascending) Icons.Default.ArrowUpward else Icons.Default.ArrowDownward,
+                                if (sort.ascending) "Ascendente" else "Descendente",
+                            )
+                        }
+                    },
+                    // Se queda abierto: así se puede volver a pulsar para invertir el sentido.
+                    onClick = { vm.selectSort(field) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DisplayButton(display: LibraryDisplay, onSelect: (LibraryDisplay) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    fun icon(d: LibraryDisplay) = when (d) {
+        LibraryDisplay.LARGE -> Icons.Default.GridView
+        LibraryDisplay.COMPACT -> Icons.Default.Apps
+        LibraryDisplay.LIST -> Icons.AutoMirrored.Filled.ViewList
+    }
+    Box {
+        IconButton(onClick = { open = true }) { Icon(icon(display), "Vista") }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            listOf(
+                LibraryDisplay.LARGE to "Portadas grandes",
+                LibraryDisplay.COMPACT to "Portadas compactas",
+                LibraryDisplay.LIST to "Lista",
+            ).forEach { (d, label) ->
+                val selected = d == display
+                DropdownMenuItem(
+                    text = { Text(label, color = if (selected) MaterialTheme.colorScheme.primary else Color.Unspecified) },
+                    leadingIcon = { Icon(icon(d), null, tint = if (selected) MaterialTheme.colorScheme.primary else LocalContentColor.current) },
+                    trailingIcon = { if (selected) Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary) },
+                    onClick = { onSelect(d); open = false },
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun FiltersSheet(vm: LibraryViewModel, onDismiss: () -> Unit) {
+    val filters by vm.filters.collectAsState()
+    val languages by vm.languages.collectAsState()
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Filtros", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                TextButton(onClick = vm::clearFilters, enabled = filters.active) { Text("Quitar todos") }
+            }
+            @Composable
+            fun Group(title: String, chips: @Composable () -> Unit) {
+                Text(title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 16.dp, bottom = 4.dp))
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { chips() }
+            }
+            Group("Estado") {
+                ReadState.entries.forEach { s ->
+                    FilterChip(selected = s in filters.states, onClick = { vm.toggleState(s) }, label = { Text(s.label) })
+                }
+            }
+            Group("Formato") {
+                BookFormat.entries.forEach { f ->
+                    FilterChip(selected = f in filters.formats, onClick = { vm.toggleFormat(f) }, label = { Text(f.name) })
+                }
+            }
+            if (languages.isNotEmpty()) {
+                Group("Idioma") {
+                    languages.forEach { l ->
+                        FilterChip(selected = l in filters.languages, onClick = { vm.toggleLanguage(l) }, label = { Text(languageName(l)) })
+                    }
+                }
+            }
         }
     }
 }
@@ -492,6 +815,7 @@ fun CollectionScreen(
 ) {
     val collection by vm.collection(collectionId).collectAsState(initial = null)
     val books by vm.booksIn(collectionId).collectAsState(initial = emptyList())
+    val display by vm.display.collectAsState()
     var bookMenu by remember { mutableStateOf<BookEntity?>(null) }
     Scaffold(
         topBar = {
@@ -503,7 +827,7 @@ fun CollectionScreen(
         bottomBar = miniPlayer,
     ) { padding ->
         Box(Modifier.padding(padding)) {
-            BookGrid(books, onOpenBook, { bookMenu = it }, empty = "Esta colección está vacía. Mantén pulsado un libro en la biblioteca para añadirlo.")
+            BookGrid(books, onOpenBook, { bookMenu = it }, empty = "Esta colección está vacía. Mantén pulsado un libro en la biblioteca para añadirlo.", display = display)
         }
     }
     bookMenu?.let { BookActionsDialog(it, vm, onDismiss = { bookMenu = null }) }

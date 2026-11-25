@@ -34,6 +34,33 @@ fun com.lectora.core.database.BookEntity.displayTitle(source: TitleSource): Stri
 /** Cómo se muestra la biblioteca: respetando las subcarpetas (por defecto) o todo junto. */
 enum class LibraryView { FOLDERS, ALL }
 
+/** Tamaño con el que se muestran los libros de la biblioteca. */
+enum class LibraryDisplay {
+    /** Cuadrícula de portadas grandes con título y autor (por defecto). */
+    LARGE,
+
+    /** Cuadrícula de portadas pequeñas: caben más libros por pantalla. */
+    COMPACT,
+
+    /** Una fila por libro, con portada en miniatura y más datos. */
+    LIST,
+}
+
+/** Criterio por el que se ordenan los libros de la biblioteca. */
+enum class LibrarySortField(val label: String, val defaultAscending: Boolean) {
+    TITLE("Título", true),
+    AUTHOR("Autor", true),
+    ADDED("Fecha de añadido", false),
+    LAST_OPENED("Última lectura", false),
+    PROGRESS("Progreso", false),
+    SIZE("Tamaño", false),
+}
+
+data class LibrarySort(
+    val field: LibrarySortField = LibrarySortField.TITLE,
+    val ascending: Boolean = field.defaultAscending,
+)
+
 /** Cómo se pasa de una página/capítulo a la siguiente. */
 enum class PageMode {
     /** Una sección por pantalla, con botones Anterior/Siguiente. */
@@ -74,6 +101,9 @@ class SettingsRepository(context: Context) {
         val pageMode = stringPreferencesKey("page_mode")
         val libraryView = stringPreferencesKey("library_view")
         val titleSource = stringPreferencesKey("title_source")
+        val libraryDisplay = stringPreferencesKey("library_display")
+        val librarySortField = stringPreferencesKey("library_sort_field")
+        val librarySortAscending = booleanPreferencesKey("library_sort_ascending")
     }
 
     val narration: Flow<NarrationSettings> = store.data.map { p -> p.toNarration() }.distinctUntilChanged()
@@ -92,6 +122,23 @@ class SettingsRepository(context: Context) {
     }.distinctUntilChanged()
 
     suspend fun setLibraryView(view: LibraryView) = store.edit { it[Keys.libraryView] = view.name }
+
+    val libraryDisplay: Flow<LibraryDisplay> = store.data.map { p ->
+        p[Keys.libraryDisplay]?.let { runCatching { LibraryDisplay.valueOf(it) }.getOrNull() } ?: LibraryDisplay.LARGE
+    }.distinctUntilChanged()
+
+    suspend fun setLibraryDisplay(display: LibraryDisplay) = store.edit { it[Keys.libraryDisplay] = display.name }
+
+    val librarySort: Flow<LibrarySort> = store.data.map { p ->
+        val field = p[Keys.librarySortField]?.let { runCatching { LibrarySortField.valueOf(it) }.getOrNull() }
+            ?: LibrarySortField.TITLE
+        LibrarySort(field, p[Keys.librarySortAscending] ?: field.defaultAscending)
+    }.distinctUntilChanged()
+
+    suspend fun setLibrarySort(sort: LibrarySort) = store.edit {
+        it[Keys.librarySortField] = sort.field.name
+        it[Keys.librarySortAscending] = sort.ascending
+    }
 
     val titleSource: Flow<TitleSource> = store.data.map { p ->
         p[Keys.titleSource]?.let { runCatching { TitleSource.valueOf(it) }.getOrNull() } ?: TitleSource.FILE_NAME
