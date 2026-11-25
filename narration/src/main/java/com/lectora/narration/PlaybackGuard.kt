@@ -32,6 +32,8 @@ internal class PlaybackGuard(
     private var hasFocus = false
     private var resumeOnFocusGain = false
     private var noisyRegistered = false
+    /** Si la narración está sonando ahora mismo (entre onPlay y onPause). */
+    private var playing = false
 
     private val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
         .setAudioAttributes(
@@ -59,6 +61,7 @@ internal class PlaybackGuard(
             if (!hasFocus) return false
         }
         resumeOnFocusGain = false
+        playing = true
         if (!noisyRegistered) {
             ContextCompat.registerReceiver(
                 appContext, noisyReceiver,
@@ -73,6 +76,7 @@ internal class PlaybackGuard(
     }
 
     fun onPause() {
+        playing = false
         if (wakeLock.isHeld) wakeLock.release()
         if (noisyRegistered) {
             runCatching { appContext.unregisterReceiver(noisyReceiver) }
@@ -101,8 +105,11 @@ internal class PlaybackGuard(
                 onResumeRequested()
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                onPauseRequested()
-                resumeOnFocusGain = true
+                // Solo reanudar al recuperar el foco si estaba sonando: si el usuario ya había
+                // pausado (p. ej. y llega una notificación), debe seguir en pausa.
+                val wasPlaying = playing
+                if (wasPlaying) onPauseRequested()
+                resumeOnFocusGain = wasPlaying
             }
             AudioManager.AUDIOFOCUS_LOSS -> {
                 onPauseRequested()
